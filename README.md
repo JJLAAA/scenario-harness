@@ -201,6 +201,16 @@ The command checks that the scenario files exist, selected repo keys are present
 `repos` and `order` agree, branch gates are declared, and repository paths resolve. It is read-only
 and exits non-zero when the scenario is not safe to execute.
 
+For a compact execution summary, use:
+
+```bash
+bin/scenario-harness plan-scenario billing-contract-change
+```
+
+This prints the scenario order, resolved repo paths, expected branches, instruction sources, key
+files, and repo-local checks. Use `--json` when the agent needs to carry the plan forward in a
+structured form.
+
 ### 1. Create Or Select A Task Directory
 
 A task directory records progress and lets an agent resume safely. If you already have one, pass it to the agent. If not, create one with the helper CLI:
@@ -224,6 +234,12 @@ When resuming, the agent should read the existing task files before editing repo
 
 If the user asks to continue without naming a task directory, the agent should inspect `tasks/` for the matching scenario and continue the most recent incomplete task. If multiple plausible tasks exist, it should ask which one to use.
 
+The helper can list matching task directories:
+
+```bash
+bin/scenario-harness list-tasks billing-contract-change --incomplete-only
+```
+
 ### 2. Run Preflight
 
 Before entering repo-local instructions or editing business code, run:
@@ -238,7 +254,25 @@ and missing key files. It updates marked sections in `status.md` and `validation
 runs replace the previous preflight block instead of duplicating notes. Use `--no-write --json`
 when the agent needs a read-only structured preview.
 
-### 3. Ask An Agent To Execute The Scenario
+### 3. Run Checks
+
+List the repo-local checks declared for the scenario:
+
+```bash
+bin/scenario-harness checks billing-contract-change
+```
+
+Run them after repo-local changes:
+
+```bash
+bin/scenario-harness checks billing-contract-change \
+  --run \
+  --task 2026-05-20-billing-contract-change
+```
+
+When `--task` is provided, check results are written to a marked section in `validation.md`.
+
+### 4. Ask An Agent To Execute The Scenario
 
 Start the agent in this harness directory and give it the scenario plus task directory when available.
 

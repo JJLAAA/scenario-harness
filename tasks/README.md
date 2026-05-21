@@ -60,6 +60,19 @@ bin/scenario-harness preflight <scenario> --task <task-id>
 This updates marked preflight sections in `status.md` and `validation.md`. Re-running it is safe;
 the previous marked sections are replaced.
 
+For resume selection, list matching tasks with:
+
+```bash
+bin/scenario-harness list-tasks <scenario> --incomplete-only
+```
+
+For validation, list or run declared checks with:
+
+```bash
+bin/scenario-harness checks <scenario>
+bin/scenario-harness checks <scenario> --run --task <task-id>
+```
+
 ## Write Rules
 
 - `spec.md`: write at task creation or selection; update when request scope, assumptions, repository order, or steps change.

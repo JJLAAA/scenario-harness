@@ -54,6 +54,9 @@ Use `bin/scenario-harness` for mechanical checks before doing manual reasoning.
 - `bin/scenario-harness validate-scenario <scenario> --json` emits stable JSON for agents that want to parse findings.
 - `bin/scenario-harness init-task <scenario> [task-id] --request "..."` creates `spec.md`, `status.md`, `validation.md`, and `decisions.md` from the selected scenario without overwriting existing task files.
 - `bin/scenario-harness preflight <scenario> --task <task-id>` inspects affected repository git status, branch gates, missing instruction sources, and missing key files, then updates `status.md` and `validation.md`.
+- `bin/scenario-harness plan-scenario <scenario>` prints the compact execution plan: repo order, paths, branch gates, instruction sources, key files, and checks.
+- `bin/scenario-harness list-tasks <scenario>` lists matching task directories newest first for resume decisions.
+- `bin/scenario-harness checks <scenario>` lists repo-local checks; add `--run --task <task-id>` to execute checks and update `validation.md`.
 
 Exit codes:
 

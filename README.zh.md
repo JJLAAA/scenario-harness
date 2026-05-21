@@ -209,6 +209,15 @@ bin/scenario-harness validate-scenario billing-contract-change --json
 `repos` 和 `order` 是否一致、branch gate 是否声明、仓库路径是否可解析。它不会修改业务仓库；
 当 scenario 不适合执行时会以非零状态码退出。
 
+需要压缩执行上下文时，使用：
+
+```bash
+bin/scenario-harness plan-scenario billing-contract-change
+```
+
+它会打印 scenario 顺序、解析后的 repo 路径、期望分支、instruction sources、key files 和 repo-local checks。
+如果 Agent 需要结构化携带这份计划，使用 `--json`。
+
 ### 1. 创建或选择任务目录
 
 任务目录用于记录进度，并让 agent 可以安全恢复。如果已有任务目录，直接提供给 agent。否则用 helper CLI 创建：
@@ -232,6 +241,12 @@ bin/scenario-harness init-task billing-contract-change \
 
 如果用户只说继续某个 scenario，但没有提供 task 目录，agent 应检查 `tasks/` 中匹配该 scenario 的任务，并继续最近一个未完成任务。如果存在多个合理候选，应先询问使用哪个 task。
 
+helper 可以列出匹配的 task 目录：
+
+```bash
+bin/scenario-harness list-tasks billing-contract-change --incomplete-only
+```
+
 ### 2. 运行 Preflight
 
 进入 repo-local instructions 或编辑业务代码之前，运行：
@@ -245,7 +260,25 @@ Preflight 会检查每个 affected repo 的当前分支、dirty state、缺失 i
 它会更新 `status.md` 和 `validation.md` 中带标记的区块；重复运行会替换旧区块，不会反复追加重复记录。
 如果 Agent 只需要结构化预览，使用 `--no-write --json`。
 
-### 3. 让 agent 执行场景
+### 3. 运行 Checks
+
+列出 scenario 声明的 repo-local checks：
+
+```bash
+bin/scenario-harness checks billing-contract-change
+```
+
+完成 repo-local 修改后运行：
+
+```bash
+bin/scenario-harness checks billing-contract-change \
+  --run \
+  --task 2026-05-20-billing-contract-change
+```
+
+提供 `--task` 时，check 结果会写入 `validation.md` 的带标记区块。
+
+### 4. 让 agent 执行场景
 
 在 harness 目录启动 agent，并尽量提供场景名和任务目录。
 
