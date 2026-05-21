@@ -1,0 +1,42 @@
+description: Update a source-of-truth contract and synchronize downstream consumers.
+
+repos:
+  - contract-repo
+  - consumer-repo
+  - worker-repo
+
+order:
+  - contract-repo
+  - consumer-repo
+  - worker-repo
+
+repo_context:
+  contract-repo:
+    instruction_sources:
+      - AGENTS.md
+      - .trellis/workflow.md
+      - CONTRIBUTING.md
+      - README.md
+    key_files:
+      - src/contracts/
+      - openapi.yaml
+  consumer-repo:
+    instruction_sources:
+      - AGENTS.md
+      - CLAUDE.md
+      - CONTRIBUTING.md
+      - README.md
+    key_files:
+      - src/api/
+      - src/generated/
+  worker-repo:
+    instruction_sources:
+      - AGENTS.md
+      - README.md
+      - Makefile
+    key_files:
+      - workers/
+      - events/
+
+integration_checks:
+  - scripts/run-integration-checks example-contract-change

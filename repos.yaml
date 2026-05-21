@@ -1,0 +1,30 @@
+repos:
+  contract-repo:
+    path: ../contract-repo
+    role: contract-source
+    description: Owns the shared contract, schema, or source-of-truth domain model.
+    default_branch: main
+    branch_prefix: scenario
+    checks:
+      - npm run lint
+      - npm run typecheck
+      - npm test
+
+  consumer-repo:
+    path: ../consumer-repo
+    role: downstream-consumer
+    description: Consumes artifacts, APIs, events, or generated clients from the contract repository.
+    default_branch: main
+    branch_prefix: scenario
+    checks:
+      - pnpm typecheck
+      - pnpm test
+
+  worker-repo:
+    path: ../worker-repo
+    role: async-worker
+    description: Processes events, jobs, or background workflows related to the scenario.
+    default_branch: main
+    branch_prefix: scenario
+    checks:
+      - make test

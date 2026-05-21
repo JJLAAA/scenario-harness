@@ -2,7 +2,7 @@
 
 ## Scenario
 
-<!-- Scenario name from manifests/scenarios.yaml. -->
+<!-- Scenario directory name under scenarios/. -->
 
 ## User Request
 

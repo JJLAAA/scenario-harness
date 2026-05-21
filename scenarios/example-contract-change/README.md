@@ -30,6 +30,6 @@ Use this scenario when a shared contract, schema, generated client, or source-of
 
 - All affected repo git states are inspected and recorded.
 - Repo-local instruction sources were read or missing files were documented.
-- Manifest-defined checks passed or failures are documented with next steps.
+- Repo-defined checks passed or failures are documented with next steps.
 - Cross-repo integration checks passed or failures are documented with next steps.
 - PR order and dependencies are recorded.
