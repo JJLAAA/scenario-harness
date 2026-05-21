@@ -34,7 +34,7 @@ This project treats agent readability as a primary design requirement.
    - Use `--json` when machine-readable output is useful.
 5. Read only the `repos.yaml` entries referenced by the scenario's `repos` and `order` fields.
 6. Create or locate a task directory under `tasks/`.
-7. Inspect git status for all affected repositories.
+7. Inspect git status for all affected repositories. Prefer `bin/scenario-harness preflight <scenario> --task <task-id>`.
 8. Modify repositories in scenario-defined order.
 9. For each repository:
    - enter the repo path
@@ -53,6 +53,7 @@ Use `bin/scenario-harness` for mechanical checks before doing manual reasoning.
 - `bin/scenario-harness validate-scenario <scenario>` validates the selected scenario, `repos.yaml` references, resolved repository paths, branch gate declarations, and basic field shapes.
 - `bin/scenario-harness validate-scenario <scenario> --json` emits stable JSON for agents that want to parse findings.
 - `bin/scenario-harness init-task <scenario> [task-id] --request "..."` creates `spec.md`, `status.md`, `validation.md`, and `decisions.md` from the selected scenario without overwriting existing task files.
+- `bin/scenario-harness preflight <scenario> --task <task-id>` inspects affected repository git status, branch gates, missing instruction sources, and missing key files, then updates `status.md` and `validation.md`.
 
 Exit codes:
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -435,6 +436,185 @@ def markdown_list(items: list[str], empty: str = "None.") -> str:
     return "\n".join(f"- `{item}`" for item in items)
 
 
+def run_git(repo_path: str, args: list[str]) -> tuple[int, str, str]:
+    process = subprocess.run(
+        ["git", "-C", repo_path, *args],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    return process.returncode, process.stdout.strip(), process.stderr.strip()
+
+
+def resolve_task_dir(root: Path, raw_task: str) -> Path:
+    path = Path(raw_task)
+    if path.is_absolute():
+        return path
+    if len(path.parts) == 1:
+        return root / "tasks" / raw_task
+    return (root / path).resolve()
+
+
+def upsert_marked_block(path: Path, marker: str, content: str) -> None:
+    start = f"<!-- scenario-harness:{marker}:start -->"
+    end = f"<!-- scenario-harness:{marker}:end -->"
+    block = f"{start}\n{content.rstrip()}\n{end}\n"
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    if start in existing and end in existing:
+        before = existing.split(start, 1)[0]
+        after = existing.split(end, 1)[1]
+        path.write_text(before + block + after.lstrip("\n"), encoding="utf-8")
+        return
+    separator = "" if not existing or existing.endswith("\n") else "\n"
+    path.write_text(existing + separator + "\n" + block, encoding="utf-8")
+
+
+def collect_preflight(root: Path, scenario: str) -> dict[str, Any]:
+    validation = validate_scenario(root, scenario)
+    context = scenario_context(root, scenario)
+    findings: list[Finding] = []
+    repo_results: list[dict[str, Any]] = []
+
+    for repo in context["repos"]:
+        repo_key = repo["key"]
+        repo_path = repo.get("path")
+        expected_branch = repo.get("expected_branch")
+        result: dict[str, Any] = {
+            "key": repo_key,
+            "path": repo_path,
+            "expected_branch": expected_branch,
+            "actual_branch": None,
+            "branch_result": "pending",
+            "dirty": None,
+            "git_status": "",
+            "missing_instruction_sources": [],
+            "missing_key_files": [],
+            "errors": [],
+        }
+
+        if not repo_path or not Path(repo_path).exists():
+            message = f"Repo path is missing for '{repo_key}': {repo_path or 'TBD'}"
+            result["errors"].append(message)
+            findings.append(Finding("error", "repo_path_missing", message, "Fix repos.yaml path before entry."))
+            repo_results.append(result)
+            continue
+
+        branch_code, branch_stdout, branch_stderr = run_git(repo_path, ["branch", "--show-current"])
+        status_code, status_stdout, status_stderr = run_git(repo_path, ["status", "--short", "--branch"])
+        if branch_code != 0:
+            message = f"Could not read git branch for '{repo_key}': {branch_stderr or branch_stdout}"
+            result["errors"].append(message)
+            findings.append(Finding("error", "git_branch_failed", message, "Confirm the repo path is a git repository."))
+        else:
+            result["actual_branch"] = branch_stdout
+            if expected_branch and branch_stdout == expected_branch:
+                result["branch_result"] = "pass"
+            else:
+                result["branch_result"] = "fail"
+                findings.append(
+                    Finding(
+                        "error",
+                        "branch_mismatch",
+                        f"Repo '{repo_key}' is on '{branch_stdout}', expected '{expected_branch}'.",
+                        "Stop before reading repo-local context or editing; ask for direction.",
+                    )
+                )
+
+        if status_code != 0:
+            message = f"Could not read git status for '{repo_key}': {status_stderr or status_stdout}"
+            result["errors"].append(message)
+            findings.append(Finding("error", "git_status_failed", message, "Confirm the repo path is a git repository."))
+        else:
+            result["git_status"] = status_stdout
+            status_lines = [line for line in status_stdout.splitlines() if line and not line.startswith("##")]
+            result["dirty"] = bool(status_lines)
+
+        for instruction in repo.get("instruction_sources") or []:
+            if not (Path(repo_path) / instruction).exists():
+                result["missing_instruction_sources"].append(instruction)
+                findings.append(
+                    Finding(
+                        "warning",
+                        "missing_instruction_source",
+                        f"Repo '{repo_key}' instruction source is missing: {instruction}",
+                        "Record the skip in task status and continue unless scenario rules say it is required.",
+                    )
+                )
+
+        for key_file in repo.get("key_files") or []:
+            if not (Path(repo_path) / key_file).exists():
+                result["missing_key_files"].append(key_file)
+                findings.append(
+                    Finding(
+                        "warning",
+                        "missing_key_file",
+                        f"Repo '{repo_key}' key file is missing: {key_file}",
+                        "Confirm scenario.yaml is current before implementation.",
+                    )
+                )
+
+        repo_results.append(result)
+
+    status = "ok" if validation["status"] == "ok" and not any(item.level == "error" for item in findings) else "error"
+    return {
+        "status": status,
+        "scenario": scenario,
+        "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "repos": repo_results,
+        "validation_findings": validation["findings"],
+        "findings": [item.to_dict() for item in findings],
+    }
+
+
+def render_preflight_status(report: dict[str, Any]) -> str:
+    rows = []
+    for repo in report["repos"]:
+        rows.append(
+            "| {key} | {branch_result} | {expected} | {actual} | {dirty} | {missing_i} | {missing_k} |".format(
+                key=repo["key"],
+                branch_result=repo["branch_result"],
+                expected=repo.get("expected_branch") or "TBD",
+                actual=repo.get("actual_branch") or "-",
+                dirty="dirty" if repo.get("dirty") else "clean",
+                missing_i=", ".join(repo.get("missing_instruction_sources") or []) or "-",
+                missing_k=", ".join(repo.get("missing_key_files") or []) or "-",
+            )
+        )
+    findings = report["findings"] or report["validation_findings"]
+    finding_lines = "\n".join(
+        f"- [{item['level']}] {item['code']}: {item['message']}" for item in findings
+    ) or "None."
+    return f"""## Preflight Report
+
+Generated: `{report['generated_at']}`
+
+| Repo | Branch Gate | Expected Branch | Actual Branch | Worktree | Missing Instruction Sources | Missing Key Files |
+| --- | --- | --- | --- | --- | --- | --- |
+{chr(10).join(rows)}
+
+Findings:
+
+{finding_lines}
+"""
+
+
+def render_preflight_validation(report: dict[str, Any]) -> str:
+    rows = []
+    for repo in report["repos"]:
+        rows.append(
+            f"| {repo['key']} | {repo.get('expected_branch') or 'TBD'} | {repo.get('actual_branch') or '-'} | {repo['branch_result']} |"
+        )
+    return f"""## Preflight Branch Gates
+
+Generated: `{report['generated_at']}`
+
+| Repo | Expected Branch | Actual Branch | Result |
+| --- | --- | --- | --- |
+{chr(10).join(rows)}
+"""
+
+
 def render_task_files(context: dict[str, Any], task_id: str, request: str) -> dict[str, str]:
     repos = context["repos"]
     order_lines = "\n".join(f"{index}. `{repo['key']}`" for index, repo in enumerate(repos, 1))
@@ -639,6 +819,40 @@ def print_text_report(report: dict[str, Any]) -> None:
         print("findings: none")
 
 
+def print_preflight_report(report: dict[str, Any]) -> None:
+    print(f"scenario: {report['scenario']}")
+    print(f"status: {report['status']}")
+    print(f"generated_at: {report['generated_at']}")
+    print("")
+    print("repos:")
+    for repo in report["repos"]:
+        print(
+            "- {key} branch={branch_result} expected={expected} actual={actual} worktree={dirty}".format(
+                key=repo["key"],
+                branch_result=repo["branch_result"],
+                expected=repo.get("expected_branch") or "TBD",
+                actual=repo.get("actual_branch") or "-",
+                dirty="dirty" if repo.get("dirty") else "clean",
+            )
+        )
+        if repo.get("missing_instruction_sources"):
+            print(f"  missing_instruction_sources: {', '.join(repo['missing_instruction_sources'])}")
+        if repo.get("missing_key_files"):
+            print(f"  missing_key_files: {', '.join(repo['missing_key_files'])}")
+        if repo.get("errors"):
+            print(f"  errors: {'; '.join(repo['errors'])}")
+    print("")
+    findings = report["findings"] or report["validation_findings"]
+    if findings:
+        print("findings:")
+        for finding in findings:
+            print(f"- [{finding['level']}] {finding['code']}: {finding['message']}")
+            if finding.get("fix"):
+                print(f"  fix: {finding['fix']}")
+    else:
+        print("findings: none")
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     root = harness_root()
     report = validate_scenario(root, args.scenario)
@@ -713,6 +927,35 @@ def cmd_init_task(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_preflight(args: argparse.Namespace) -> int:
+    root = harness_root()
+    report = collect_preflight(root, args.scenario)
+    task_dir = resolve_task_dir(root, args.task) if args.task else None
+
+    if task_dir and not args.no_write:
+        if not task_dir.exists():
+            raise HarnessError(
+                f"Task directory does not exist: {task_dir}",
+                EXIT_VALIDATION,
+            )
+        upsert_marked_block(task_dir / "status.md", "preflight-status", render_preflight_status(report))
+        upsert_marked_block(
+            task_dir / "validation.md",
+            "preflight-validation",
+            render_preflight_validation(report),
+        )
+
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print_preflight_report(report)
+        if task_dir and not args.no_write:
+            print("")
+            print(f"updated: {task_dir / 'status.md'}")
+            print(f"updated: {task_dir / 'validation.md'}")
+    return EXIT_OK if report["status"] == "ok" else EXIT_VALIDATION
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="scenario-harness",
@@ -743,6 +986,19 @@ def build_parser() -> argparse.ArgumentParser:
     init_task.add_argument("--dry-run", action="store_true", help="Preview files without writing them.")
     init_task.add_argument("--json", action="store_true", help="Emit stable JSON output.")
     init_task.set_defaults(func=cmd_init_task)
+
+    preflight = subparsers.add_parser(
+        "preflight",
+        help="Inspect affected repos and optionally update task status and validation files.",
+    )
+    preflight.add_argument("scenario", help="Scenario directory name under scenarios/.")
+    preflight.add_argument(
+        "--task",
+        help="Task id under tasks/ or a task directory path. When present, status.md and validation.md are updated.",
+    )
+    preflight.add_argument("--no-write", action="store_true", help="Do not update task files.")
+    preflight.add_argument("--json", action="store_true", help="Emit stable JSON output.")
+    preflight.set_defaults(func=cmd_preflight)
 
     return parser
 

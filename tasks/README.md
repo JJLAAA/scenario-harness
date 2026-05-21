@@ -51,6 +51,15 @@ When continuing a task, read the task files before editing repositories:
 
 Use `spec.md` to understand the task definition and execution steps. Use `status.md` to find the current step. Use `validation.md` to avoid rerunning checks unless the related repo changed or prior output is stale. Use `decisions.md` to preserve compatibility and delivery choices.
 
+Before entering business repositories, refresh mechanical repo state with:
+
+```bash
+bin/scenario-harness preflight <scenario> --task <task-id>
+```
+
+This updates marked preflight sections in `status.md` and `validation.md`. Re-running it is safe;
+the previous marked sections are replaced.
+
 ## Write Rules
 
 - `spec.md`: write at task creation or selection; update when request scope, assumptions, repository order, or steps change.

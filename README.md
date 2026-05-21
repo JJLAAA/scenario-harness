@@ -224,7 +224,21 @@ When resuming, the agent should read the existing task files before editing repo
 
 If the user asks to continue without naming a task directory, the agent should inspect `tasks/` for the matching scenario and continue the most recent incomplete task. If multiple plausible tasks exist, it should ask which one to use.
 
-### 2. Ask An Agent To Execute The Scenario
+### 2. Run Preflight
+
+Before entering repo-local instructions or editing business code, run:
+
+```bash
+bin/scenario-harness preflight billing-contract-change \
+  --task 2026-05-20-billing-contract-change
+```
+
+Preflight checks each affected repository's current branch, dirty state, missing instruction sources,
+and missing key files. It updates marked sections in `status.md` and `validation.md`, so repeated
+runs replace the previous preflight block instead of duplicating notes. Use `--no-write --json`
+when the agent needs a read-only structured preview.
+
+### 3. Ask An Agent To Execute The Scenario
 
 Start the agent in this harness directory and give it the scenario plus task directory when available.
 

@@ -232,7 +232,20 @@ bin/scenario-harness init-task billing-contract-change \
 
 如果用户只说继续某个 scenario，但没有提供 task 目录，agent 应检查 `tasks/` 中匹配该 scenario 的任务，并继续最近一个未完成任务。如果存在多个合理候选，应先询问使用哪个 task。
 
-### 2. 让 agent 执行场景
+### 2. 运行 Preflight
+
+进入 repo-local instructions 或编辑业务代码之前，运行：
+
+```bash
+bin/scenario-harness preflight billing-contract-change \
+  --task 2026-05-20-billing-contract-change
+```
+
+Preflight 会检查每个 affected repo 的当前分支、dirty state、缺失 instruction source 和缺失 key file。
+它会更新 `status.md` 和 `validation.md` 中带标记的区块；重复运行会替换旧区块，不会反复追加重复记录。
+如果 Agent 只需要结构化预览，使用 `--no-write --json`。
+
+### 3. 让 agent 执行场景
 
 在 harness 目录启动 agent，并尽量提供场景名和任务目录。
 
