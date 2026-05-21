@@ -191,6 +191,24 @@ scenarios/billing-contract-change/scenario.yaml
 
 ## 执行一次任务
 
+### 0. 校验 Scenario
+
+创建 task 文件或进入业务仓库之前，先运行 agent helper CLI：
+
+```bash
+bin/scenario-harness validate-scenario billing-contract-change
+```
+
+如果 Agent 需要结构化输出，使用 JSON：
+
+```bash
+bin/scenario-harness validate-scenario billing-contract-change --json
+```
+
+这个命令会只读检查 scenario 文件是否存在、选中的 repo key 是否存在于 `repos.yaml`、
+`repos` 和 `order` 是否一致、branch gate 是否声明、仓库路径是否可解析。它不会修改业务仓库；
+当 scenario 不适合执行时会以非零状态码退出。
+
 ### 1. 创建或选择任务目录
 
 任务目录用于记录进度，并让 agent 可以安全恢复。如果已有任务目录，直接提供给 agent。否则创建一个稳定的 task id，建议使用日期加场景名：

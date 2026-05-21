@@ -183,6 +183,24 @@ Then create `scenarios/billing-contract-change/README.md` for the scenario purpo
 
 ## Running A Task
 
+### 0. Validate The Scenario
+
+Before creating task files or entering business repositories, run the agent helper CLI:
+
+```bash
+bin/scenario-harness validate-scenario billing-contract-change
+```
+
+Use JSON when the agent needs a structured contract:
+
+```bash
+bin/scenario-harness validate-scenario billing-contract-change --json
+```
+
+The command checks that the scenario files exist, selected repo keys are present in `repos.yaml`,
+`repos` and `order` agree, branch gates are declared, and repository paths resolve. It is read-only
+and exits non-zero when the scenario is not safe to execute.
+
 ### 1. Create Or Select A Task Directory
 
 A task directory records progress and lets an agent resume safely. If you already have one, pass it to the agent. If not, create one with a stable task id. Date plus scenario name works well:

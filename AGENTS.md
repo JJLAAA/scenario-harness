@@ -29,11 +29,14 @@ This project treats agent readability as a primary design requirement.
 1. Identify the scenario.
 2. Read `scenarios/<scenario>/scenario.yaml`.
 3. Read `scenarios/<scenario>/README.md`.
-4. Read only the `repos.yaml` entries referenced by the scenario's `repos` and `order` fields.
-5. Create or locate a task directory under `tasks/`.
-6. Inspect git status for all affected repositories.
-7. Modify repositories in scenario-defined order.
-8. For each repository:
+4. Run `bin/scenario-harness validate-scenario <scenario>` from the harness root.
+   - If it reports errors, stop before editing business repositories.
+   - Use `--json` when machine-readable output is useful.
+5. Read only the `repos.yaml` entries referenced by the scenario's `repos` and `order` fields.
+6. Create or locate a task directory under `tasks/`.
+7. Inspect git status for all affected repositories.
+8. Modify repositories in scenario-defined order.
+9. For each repository:
    - enter the repo path
    - verify the current branch exactly matches the scenario-defined branch
    - read scenario-defined local instructions in the configured order
@@ -41,7 +44,22 @@ This project treats agent readability as a primary design requirement.
    - implement the repo-local change
    - run repo-local checks
    - record the result
-9. Update task status.
+10. Update task status.
+
+## Agent Helper CLI
+
+Use `bin/scenario-harness` for mechanical checks before doing manual reasoning.
+
+- `bin/scenario-harness validate-scenario <scenario>` validates the selected scenario, `repos.yaml` references, resolved repository paths, branch gate declarations, and basic field shapes.
+- `bin/scenario-harness validate-scenario <scenario> --json` emits stable JSON for agents that want to parse findings.
+
+Exit codes:
+
+- `0`: validation passed.
+- `2`: scenario or repository configuration is invalid.
+- `64`: command usage or runtime prerequisites are invalid.
+
+The helper CLI never edits business repositories.
 
 ## Repo Entry Protocol
 

@@ -1,0 +1,460 @@
+#!/usr/bin/env python3
+"""Agent-friendly helper CLI for Scenario Harness."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+EXIT_OK = 0
+EXIT_VALIDATION = 2
+EXIT_USAGE = 64
+
+
+class HarnessError(Exception):
+    def __init__(self, message: str, exit_code: int = EXIT_VALIDATION):
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+@dataclass
+class Finding:
+    level: str
+    code: str
+    message: str
+    fix: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "level": self.level,
+            "code": self.code,
+            "message": self.message,
+        }
+        if self.fix:
+            data["fix"] = self.fix
+        return data
+
+
+def parse_scalar(value: str) -> Any:
+    value = value.strip()
+    if value in ("", "null", "Null", "NULL", "~"):
+        return None
+    if value in ("true", "True", "TRUE"):
+        return True
+    if value in ("false", "False", "FALSE"):
+        return False
+    if (value.startswith('"') and value.endswith('"')) or (
+        value.startswith("'") and value.endswith("'")
+    ):
+        return value[1:-1]
+    return value
+
+
+def next_content(lines: list[str], start: int) -> tuple[int, str] | None:
+    for raw in lines[start:]:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        return len(raw) - len(raw.lstrip(" ")), stripped
+    return None
+
+
+def parse_yaml_subset(text: str) -> Any:
+    """Parse the small YAML subset used by this harness.
+
+    Supported constructs: nested mappings and scalar lists, with indentation.
+    This avoids a runtime dependency while keeping errors deterministic for agents.
+    """
+
+    lines = text.splitlines()
+    root: dict[str, Any] = {}
+    stack: list[tuple[int, Any]] = [(-1, root)]
+
+    for index, raw in enumerate(lines):
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "\t" in raw[: len(raw) - len(raw.lstrip())]:
+            raise HarnessError("YAML indentation must use spaces, not tabs.")
+
+        indent = len(raw) - len(raw.lstrip(" "))
+        while indent <= stack[-1][0]:
+            stack.pop()
+        parent = stack[-1][1]
+
+        if stripped.startswith("- "):
+            if not isinstance(parent, list):
+                raise HarnessError(f"YAML list item has no list parent near: {stripped}")
+            parent.append(parse_scalar(stripped[2:]))
+            continue
+
+        if ":" not in stripped:
+            raise HarnessError(f"YAML mapping line is missing ':': {stripped}")
+
+        key, raw_value = stripped.split(":", 1)
+        key = key.strip()
+        raw_value = raw_value.strip()
+        if not key:
+            raise HarnessError(f"YAML mapping key is empty near: {stripped}")
+        if not isinstance(parent, dict):
+            raise HarnessError(f"YAML mapping item has no mapping parent near: {stripped}")
+
+        if raw_value:
+            parent[key] = parse_scalar(raw_value)
+            continue
+
+        following = next_content(lines, index + 1)
+        child: Any = [] if following and following[0] > indent and following[1].startswith("- ") else {}
+        parent[key] = child
+        stack.append((indent, child))
+
+    return root
+
+
+def load_yaml(path: Path) -> Any:
+    try:
+        import yaml  # type: ignore
+    except ImportError as exc:
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                return parse_yaml_subset(handle.read())
+        except FileNotFoundError as file_exc:
+            raise HarnessError(f"Required file is missing: {path}") from file_exc
+        except HarnessError as parse_exc:
+            raise HarnessError(f"Invalid YAML in {path}: {parse_exc}") from parse_exc
+
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return yaml.safe_load(handle) or {}
+    except FileNotFoundError as exc:
+        raise HarnessError(f"Required file is missing: {path}") from exc
+    except yaml.YAMLError as exc:  # type: ignore[name-defined]
+        raise HarnessError(f"Invalid YAML in {path}: {exc}") from exc
+
+
+def harness_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def resolve_harness_path(root: Path, raw_path: str) -> Path:
+    if "$" in raw_path:
+        raise HarnessError(f"Invalid path contains shell-style variable: {raw_path}")
+    path = Path(raw_path)
+    if not path.is_absolute():
+        path = root / path
+    return path.resolve()
+
+
+def load_scenario(root: Path, scenario: str) -> tuple[Path, dict[str, Any]]:
+    scenario_dir = root / "scenarios" / scenario
+    scenario_file = scenario_dir / "scenario.yaml"
+    data = load_yaml(scenario_file)
+    if not isinstance(data, dict):
+        raise HarnessError(f"Scenario file must contain a mapping: {scenario_file}")
+    return scenario_dir, data
+
+
+def load_repos(root: Path) -> dict[str, Any]:
+    data = load_yaml(root / "repos.yaml")
+    repos = data.get("repos") if isinstance(data, dict) else None
+    if not isinstance(repos, dict):
+        raise HarnessError("repos.yaml must contain a top-level 'repos' mapping.")
+    return repos
+
+
+def selected_repo_keys(scenario_data: dict[str, Any]) -> tuple[list[str], list[str]]:
+    repos = scenario_data.get("repos")
+    order = scenario_data.get("order")
+    if not isinstance(repos, list) or not all(isinstance(item, str) for item in repos):
+        repos = []
+    if not isinstance(order, list) or not all(isinstance(item, str) for item in order):
+        order = []
+    return list(repos), list(order)
+
+
+def validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
+    findings: list[Finding] = []
+
+    scenario_dir = root / "scenarios" / scenario
+    scenario_file = scenario_dir / "scenario.yaml"
+    readme_file = scenario_dir / "README.md"
+
+    if not scenario_file.exists():
+        raise HarnessError(
+            f"Scenario config is missing: {scenario_file}",
+            EXIT_VALIDATION,
+        )
+
+    scenario_dir, scenario_data = load_scenario(root, scenario)
+    repos_registry = load_repos(root)
+    repos, order = selected_repo_keys(scenario_data)
+    repo_context = scenario_data.get("repo_context")
+
+    if not readme_file.exists():
+        findings.append(
+            Finding(
+                "error",
+                "missing_scenario_readme",
+                f"Scenario README is missing: {readme_file}",
+                f"Create {readme_file} with SOP, invariants, and completion criteria.",
+            )
+        )
+
+    if not isinstance(scenario_data.get("description"), str) or not scenario_data.get("description"):
+        findings.append(
+            Finding(
+                "error",
+                "missing_description",
+                "scenario.yaml must include a non-empty 'description'.",
+                "Add a one-sentence scenario summary.",
+            )
+        )
+
+    if not repos:
+        findings.append(
+            Finding(
+                "error",
+                "invalid_repos",
+                "scenario.yaml must include a non-empty 'repos' list of repo keys.",
+                "Add repo keys that exist in repos.yaml.",
+            )
+        )
+
+    if not order:
+        findings.append(
+            Finding(
+                "error",
+                "invalid_order",
+                "scenario.yaml must include a non-empty 'order' list of repo keys.",
+                "Add the authoritative execution order.",
+            )
+        )
+
+    if set(repos) != set(order):
+        missing_from_order = sorted(set(repos) - set(order))
+        missing_from_repos = sorted(set(order) - set(repos))
+        detail = []
+        if missing_from_order:
+            detail.append(f"missing from order: {', '.join(missing_from_order)}")
+        if missing_from_repos:
+            detail.append(f"missing from repos: {', '.join(missing_from_repos)}")
+        findings.append(
+            Finding(
+                "error",
+                "repo_order_mismatch",
+                "scenario.yaml 'repos' and 'order' must contain the same repo keys"
+                + (f" ({'; '.join(detail)})" if detail else "."),
+                "Make 'repos' and 'order' contain the same keys; keep sequence only in 'order'.",
+            )
+        )
+
+    if not isinstance(repo_context, dict):
+        findings.append(
+            Finding(
+                "error",
+                "invalid_repo_context",
+                "scenario.yaml must include a 'repo_context' mapping.",
+                "Add repo_context entries for every selected repo.",
+            )
+        )
+        repo_context = {}
+
+    selected = order or repos
+    repo_reports: list[dict[str, Any]] = []
+    for repo_key in selected:
+        repo_report: dict[str, Any] = {"key": repo_key}
+        registry_entry = repos_registry.get(repo_key)
+        context_entry = repo_context.get(repo_key) if isinstance(repo_context, dict) else None
+
+        if not isinstance(registry_entry, dict):
+            findings.append(
+                Finding(
+                    "error",
+                    "unknown_repo",
+                    f"Scenario references repo '{repo_key}' but repos.yaml has no matching entry.",
+                    f"Add repos.{repo_key} to repos.yaml or remove it from the scenario.",
+                )
+            )
+            repo_report["registry"] = "missing"
+        else:
+            raw_path = registry_entry.get("path")
+            if not isinstance(raw_path, str) or not raw_path:
+                findings.append(
+                    Finding(
+                        "error",
+                        "missing_repo_path",
+                        f"repos.{repo_key}.path must be a non-empty string.",
+                        f"Set repos.{repo_key}.path to the local repository path.",
+                    )
+                )
+            else:
+                try:
+                    resolved_path = resolve_harness_path(root, raw_path)
+                    repo_report["path"] = str(resolved_path)
+                    if not resolved_path.exists():
+                        findings.append(
+                            Finding(
+                                "error",
+                                "repo_path_missing",
+                                f"Repo path does not exist for '{repo_key}': {resolved_path}",
+                                "Clone or move the repository, or update repos.yaml.",
+                            )
+                        )
+                    elif not (resolved_path / ".git").exists():
+                        findings.append(
+                            Finding(
+                                "warning",
+                                "repo_path_not_git",
+                                f"Repo path for '{repo_key}' does not contain .git: {resolved_path}",
+                                "Confirm the path points at the repository root.",
+                            )
+                        )
+                except HarnessError as exc:
+                    findings.append(
+                        Finding(
+                            "error",
+                            "invalid_repo_path",
+                            str(exc),
+                            f"Use an absolute path or a path relative to {root}.",
+                        )
+                    )
+
+            checks = registry_entry.get("checks")
+            if checks is not None and (
+                not isinstance(checks, list) or not all(isinstance(item, str) for item in checks)
+            ):
+                findings.append(
+                    Finding(
+                        "error",
+                        "invalid_checks",
+                        f"repos.{repo_key}.checks must be a list of command strings when present.",
+                        "Use YAML list items such as '- npm test'.",
+                    )
+                )
+
+        if not isinstance(context_entry, dict):
+            findings.append(
+                Finding(
+                    "error",
+                    "missing_repo_context",
+                    f"repo_context.{repo_key} is required.",
+                    f"Add branch, instruction_sources, and key_files for {repo_key}.",
+                )
+            )
+        else:
+            branch = context_entry.get("branch")
+            if not isinstance(branch, str) or not branch:
+                findings.append(
+                    Finding(
+                        "error",
+                        "missing_branch_gate",
+                        f"repo_context.{repo_key}.branch must be a non-empty string.",
+                        "Set the exact branch the agent must find before editing.",
+                    )
+                )
+            repo_report["expected_branch"] = branch
+
+            for field in ("instruction_sources", "key_files"):
+                value = context_entry.get(field)
+                if value is not None and (
+                    not isinstance(value, list) or not all(isinstance(item, str) for item in value)
+                ):
+                    findings.append(
+                        Finding(
+                            "error",
+                            f"invalid_{field}",
+                            f"repo_context.{repo_key}.{field} must be a list of strings when present.",
+                            f"Use YAML list items under repo_context.{repo_key}.{field}.",
+                        )
+                    )
+
+        repo_reports.append(repo_report)
+
+    status = "ok" if not any(item.level == "error" for item in findings) else "error"
+    return {
+        "status": status,
+        "scenario": scenario,
+        "scenario_file": str(scenario_file),
+        "scenario_readme": str(readme_file),
+        "repos": repo_reports,
+        "findings": [item.to_dict() for item in findings],
+    }
+
+
+def print_text_report(report: dict[str, Any]) -> None:
+    print(f"scenario: {report['scenario']}")
+    print(f"status: {report['status']}")
+    print(f"scenario_file: {report['scenario_file']}")
+    print(f"scenario_readme: {report['scenario_readme']}")
+    print("")
+    print("repos:")
+    for repo in report["repos"]:
+        line = f"- {repo['key']}"
+        if repo.get("path"):
+            line += f" path={repo['path']}"
+        if repo.get("expected_branch"):
+            line += f" expected_branch={repo['expected_branch']}"
+        if repo.get("registry") == "missing":
+            line += " registry=missing"
+        print(line)
+    print("")
+    if report["findings"]:
+        print("findings:")
+        for finding in report["findings"]:
+            print(f"- [{finding['level']}] {finding['code']}: {finding['message']}")
+            if finding.get("fix"):
+                print(f"  fix: {finding['fix']}")
+    else:
+        print("findings: none")
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    root = harness_root()
+    report = validate_scenario(root, args.scenario)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print_text_report(report)
+    return EXIT_OK if report["status"] == "ok" else EXIT_VALIDATION
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="scenario-harness",
+        description="Agent-friendly helpers for cross-repo Scenario Harness workflows.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    validate = subparsers.add_parser(
+        "validate-scenario",
+        help="Validate scenario config, repo references, paths, and branch gates.",
+    )
+    validate.add_argument("scenario", help="Scenario directory name under scenarios/.")
+    validate.add_argument("--json", action="store_true", help="Emit stable JSON output.")
+    validate.set_defaults(func=cmd_validate)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        return args.func(args)
+    except HarnessError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return exc.exit_code
+    except KeyboardInterrupt:
+        print("error: interrupted", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
