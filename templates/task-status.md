@@ -8,9 +8,7 @@ Task ID:
 
 | Repo | Status | Expected Branch | Actual Branch | Checks |
 | --- | --- | --- | --- | --- |
-| contract-repo | not started | scenario/example-contract-change | - | pending |
-| consumer-repo | not started | scenario/example-contract-change | - | pending |
-| worker-repo | not started | scenario/example-contract-change | - | pending |
+| repo-key-from-scenario-order | not started | expected-branch-from-scenario-yaml | - | pending |
 
 ## Current Step
 

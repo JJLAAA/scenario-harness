@@ -4,13 +4,11 @@
 
 | Date | Decision | Reason | Impact |
 | --- | --- | --- | --- |
-| TBD | TBD | TBD | TBD |
 
 ## Rejected
 
 | Date | Option | Reason Rejected |
 | --- | --- | --- |
-| TBD | TBD | TBD |
 
 ## Notes
 

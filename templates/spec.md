@@ -22,24 +22,21 @@
 
 ## Scenario Order
 
-1. `contract-repo`
-2. `consumer-repo`
-3. `worker-repo`
+<!-- Prefer generating this file with:
+bin/scenario-harness init-task <scenario> [task-id] --request "..."
+If editing manually, replace this list with scenario.yaml order.
+-->
+
+1. `repo-key-from-scenario-order`
 
 ## Steps
 
 | Step | Repo | Action | Status |
 | --- | --- | --- | --- |
-| 1 | contract-repo | Inspect status, verify branch, and read instructions | pending |
-| 2 | contract-repo | Implement source-of-truth change | pending |
-| 3 | contract-repo | Run repo-local checks | pending |
-| 4 | consumer-repo | Inspect status, verify branch, and read instructions | pending |
-| 5 | consumer-repo | Synchronize downstream usage | pending |
-| 6 | consumer-repo | Run repo-local checks | pending |
-| 7 | worker-repo | Inspect status, verify branch, and read instructions | pending |
-| 8 | worker-repo | Synchronize event or job handling | pending |
-| 9 | worker-repo | Run repo-local checks | pending |
-| 10 | all | Update validation and task status | pending |
+| 1 | repo-key-from-scenario-order | Inspect status, verify branch, read instructions, and inspect key files | pending |
+| 2 | repo-key-from-scenario-order | Implement repo-local change | pending |
+| 3 | repo-key-from-scenario-order | Run repo-local checks | pending |
+| 4 | all | Update validation and task status | pending |
 
 ## Open Questions
 

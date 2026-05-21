@@ -4,17 +4,13 @@
 
 | Repo | Expected Branch | Actual Branch | Result |
 | --- | --- | --- | --- |
-| contract-repo | scenario/example-contract-change | TBD | pending |
-| consumer-repo | scenario/example-contract-change | TBD | pending |
-| worker-repo | scenario/example-contract-change | TBD | pending |
+| repo-key-from-scenario-order | expected-branch-from-scenario-yaml | TBD | pending |
 
 ## Repo-Local Checks
 
 | Repo | Command | Result | Notes |
 | --- | --- | --- | --- |
-| contract-repo | TBD | pending |  |
-| consumer-repo | TBD | pending |  |
-| worker-repo | TBD | pending |  |
+| repo-key-from-scenario-order | command-from-repos-yaml-checks | pending |  |
 
 ## Known Failures
 
