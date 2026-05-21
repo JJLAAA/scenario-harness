@@ -12,7 +12,27 @@ Scenario Harness 是一个轻量的跨仓库交付控制层，用来帮助 agent
 - 仓库应该按什么顺序修改
 - 进入每个仓库后应该先读哪些本地规则
 - 应该运行哪些检查
-- 任务进度、验证结果、决策和 PR 顺序记录在哪里
+- 任务进度、验证结果、决策和交付顺序记录在哪里
+
+## 为什么需要它
+
+Coding agent 越来越依赖 spec、指令和执行协议来可靠地完成代码开发。对于单个 repo，或者拥有统一工具链和统一 review 上下文的 monorepo，已经有很多方式可以给 agent 提供这些指引：repo-local instructions、任务 spec、package scripts、测试和项目文档。
+
+但很多企业系统并不是这种形态。一次真实交付可能同时涉及多个独立 ownership 的 repo：API service、frontend、SDK、worker、infra、fixtures 或文档。这些 repo 可能因为团队边界、权限控制、发布节奏、合规要求或既有运维实践，必须继续保持独立。
+
+代码分散在多个 repo 中，并不代表业务变更本身是分散的。对 agent 来说，它仍然需要理解这次变更的整体形状：哪些 repo 参与、哪个 repo 应该先改、进入每个 repo 后适用哪些本地规则、应该运行哪些检查、做过哪些决策，以及如何记录整个场景的进度。
+
+Scenario Harness 补的就是这一层 scenario-level 协议。它不强行合并 repo，而是在保持各仓库独立的前提下，为 coding agent 提供一个最小但明确的跨 repo 协同开发流程。
+
+## 与 Repo-Local Spec 框架的关系
+
+Scenario Harness 不与 Spec Kit、OpenSpec、Trellis 或 repo 自定义 agent workflow 这类单 repo / monorepo spec 框架竞争。它位于这些框架之上。
+
+它当前能够保证的是显式发现和委托：每个 scenario 可以声明 Agent 进入某个 repo 后必须读取哪些 repo-local 指令入口、spec 目录和关键文件，然后再进行修改。
+
+它不保证特定 spec 框架的运行时机制，例如 hooks、slash commands、MCP servers 或上下文注入，会在 Agent 进入 repo 后自动生效。这些机制是否可用，取决于具体 Agent runtime 和框架实现，需要针对每个框架通过实践验证。
+
+对于依赖 hooks 的框架，业务 repo 应该通过 `AGENTS.md`、`CLAUDE.md`、`README.md` 或 scenario-defined `instruction_sources` 暴露静态 fallback 入口。这样即使运行时注入不可用，Agent 仍然可以显式读取并遵守 repo-local spec 规则。
 
 ## 适用场景
 
@@ -36,16 +56,24 @@ Scenario Harness 是一个轻量的跨仓库交付控制层，用来帮助 agent
 强制阅读顺序：
 
 1. `AGENTS.md`
-2. `repos.yaml`
-3. `scenarios/<scenario>/scenario.yaml`
-4. `scenarios/<scenario>/README.md`
+2. `scenarios/<scenario>/scenario.yaml`
+3. `scenarios/<scenario>/README.md`
+4. `repos.yaml`，只作为场景已选 repo key 的元数据查询表
 
 其中：
 
 - `AGENTS.md` 定义执行协议、YAML 字段语义、路径解析、执行顺序和冲突处理
-- `repos.yaml` 定义稳定的仓库清单和 repo-local 执行约定
 - `scenarios/<scenario>/scenario.yaml` 定义该场景的机器可读执行配置
 - `scenarios/<scenario>/README.md` 定义具体业务场景的 SOP
+- `repos.yaml` 定义稳定的仓库元数据和 repo-local 执行约定；它是字典，不是每个场景都要执行的 repo 列表
+
+在一个 scenario 目录内，两个文件职责不同：
+
+- `scenario.yaml` 是权威执行配置：选择哪些 repo、执行顺序、repo-local instruction sources 和 key files。
+- 它也通过 `repo_context.<repo>.branch` 声明每个 repo 期望处于的精确分支名；如果当前分支不匹配，agent 必须停止并反馈。
+- `README.md` 是场景 SOP：业务意图、设计理由、跨 repo invariants、兼容性要求、完成标准、风险，以及不适合写进 YAML 的判断规则。
+
+README 不应该重复或覆盖 `scenario.yaml` 中的结构化执行字段。如果二者在执行结构上冲突，除非会造成破坏性或不安全行为，否则以 `scenario.yaml` 为准。如果二者在业务意图、兼容性要求或完成标准上冲突，先停止并报告冲突，不要直接编辑业务 repo。
 
 ## 目录结构
 
@@ -63,13 +91,9 @@ scenario-harness/
     README.md
   templates/
     decisions.md
-    pr-plan.md
-    task-brief.md
-    task-plan.md
+    spec.md
     task-status.md
     validation-report.md
-  scripts/
-    README.md
 ```
 
 ## 初始化配置
@@ -140,6 +164,7 @@ order:
 
 repo_context:
   api:
+    branch: scenario/billing-contract-change
     instruction_sources:
       - AGENTS.md
       - CONTRIBUTING.md
@@ -148,14 +173,12 @@ repo_context:
       - openapi.yaml
       - src/contracts/
   web:
+    branch: scenario/billing-contract-change
     instruction_sources:
       - AGENTS.md
       - README.md
     key_files:
       - src/api/
-
-integration_checks:
-  - scripts/run-integration-checks billing-contract-change
 ```
 
 放置位置：
@@ -168,25 +191,32 @@ scenarios/billing-contract-change/scenario.yaml
 
 ## 执行一次任务
 
-### 1. 创建任务目录
+### 1. 创建或选择任务目录
 
-建议使用日期加场景名作为 task id：
+任务目录用于记录进度，并让 agent 可以安全恢复。如果已有任务目录，直接提供给 agent。否则创建一个稳定的 task id，建议使用日期加场景名：
 
 ```bash
 mkdir -p tasks/2026-05-20-billing-contract-change
-cp templates/task-brief.md tasks/2026-05-20-billing-contract-change/brief.md
-cp templates/task-plan.md tasks/2026-05-20-billing-contract-change/plan.md
+cp templates/spec.md tasks/2026-05-20-billing-contract-change/spec.md
 cp templates/task-status.md tasks/2026-05-20-billing-contract-change/status.md
 cp templates/decisions.md tasks/2026-05-20-billing-contract-change/decisions.md
 cp templates/validation-report.md tasks/2026-05-20-billing-contract-change/validation.md
-cp templates/pr-plan.md tasks/2026-05-20-billing-contract-change/prs.md
 ```
 
-先填写 `brief.md`，记录用户需求、范围、非目标和初始假设。
+先填写 `spec.md`，记录用户需求、范围、非目标、初始假设、repo 顺序和执行步骤。
+
+继续已有任务时，agent 应先读取这些 task 文件，再编辑业务 repo：
+
+1. `spec.md`
+2. `status.md`
+3. `decisions.md`
+4. `validation.md`
+
+如果用户只说继续某个 scenario，但没有提供 task 目录，agent 应检查 `tasks/` 中匹配该 scenario 的任务，并继续最近一个未完成任务。如果存在多个合理候选，应先询问使用哪个 task。
 
 ### 2. 让 agent 执行场景
 
-在 harness 目录启动 agent，并提供场景名和任务目录。
+在 harness 目录启动 agent，并尽量提供场景名和任务目录。
 
 可直接使用这个 prompt：
 
@@ -194,12 +224,22 @@ cp templates/pr-plan.md tasks/2026-05-20-billing-contract-change/prs.md
 执行 scenario billing-contract-change。
 任务目录是 tasks/2026-05-20-billing-contract-change。
 
-先阅读 AGENTS.md、repos.yaml、scenarios/billing-contract-change/scenario.yaml
-和 scenarios/billing-contract-change/README.md。
+先阅读 AGENTS.md、scenarios/billing-contract-change/scenario.yaml
+和 scenarios/billing-contract-change/README.md，然后只读取 repos.yaml 中被该 scenario 选中的 repo 条目。
 
 然后解析 repo 路径，检查 affected repos 的 git status，按 scenario order 进入各 repo，
-读取 scenario 定义的 repo-local instruction sources，检查 key files，实施修改，运行 checks，并更新 task status、
-validation report、decisions 和 PR plan。
+检查每个 repo 当前分支是否等于 scenario.yaml 指定分支，读取 scenario 定义的 repo-local instruction sources，
+检查 key files，实施修改，运行 checks，并更新 task status、validation report 和 decisions。
+除非我明确要求，不要 commit。
+```
+
+继续已有任务可以使用：
+
+```text
+继续 scenario billing-contract-change。
+任务目录是 tasks/2026-05-20-billing-contract-change。
+
+先读取 task 文件，然后从下一个未完成步骤继续。
 除非我明确要求，不要 commit。
 ```
 
@@ -223,18 +263,18 @@ scenario 应该足够收敛，让 agent 可以依靠已配置的 repos、`repo_c
 agent 应该：
 
 1. 按顺序阅读 harness 文档
-2. 从 `repos.yaml` 解析 repo 路径
-3. 阅读 `scenarios/<scenario>/scenario.yaml`
-4. 阅读 `scenarios/<scenario>/README.md`
+2. 阅读 `scenarios/<scenario>/scenario.yaml`，确定 affected repo key
+3. 阅读 `scenarios/<scenario>/README.md`
+4. 只从 `repos.yaml` 解析这些 affected repo 的路径和元数据
 5. 检查每个 affected repo 的 `git status`
-6. 按 `scenarios.<name>.order` 执行
-7. 进入每个 repo 后读取 scenario 定义的 `repo_context.<repo>.instruction_sources`
-8. 检查 scenario 定义的 `repo_context.<repo>.key_files`
-9. 实施 repo-local 修改
-10. 运行 repo-local `checks`
-11. 运行 `integration_checks`
+6. 检查每个 affected repo 当前分支是否精确匹配 `repo_context.<repo>.branch`；不匹配时在编辑前停止并反馈
+7. 按 `scenarios.<name>.order` 执行
+8. 进入每个 repo 后读取 scenario 定义的 `repo_context.<repo>.instruction_sources`
+9. 检查 scenario 定义的 `repo_context.<repo>.key_files`
+10. 实施 repo-local 修改
+11. 运行每个 affected repo 的 repo-local `checks`
 12. 更新 `tasks/<task-id>/` 下的任务文件
-13. 汇报 diff 范围、验证结果、风险和 PR 顺序
+13. 汇报 diff 范围、验证结果、风险和交付顺序
 
 agent 不应该：
 
@@ -242,6 +282,7 @@ agent 不应该：
 - 把一个 repo 的规则套用到另一个 repo
 - 覆盖无关本地改动
 - 混合多个 repo 的 commit
+- scenario 分支检查失败时自动 checkout 或创建分支
 - 在没有明确要求时 commit 或创建 PR
 - 在 `AGENTS.md` 已定义语义时自行猜测 YAML 行为
 
@@ -251,12 +292,10 @@ agent 不应该：
 
 | 文件 | 作用 |
 | --- | --- |
-| `brief.md` | 用户需求、范围、非目标、假设 |
-| `plan.md` | repo 顺序和执行步骤 |
+| `spec.md` | 用户需求、范围、非目标、假设、repo 顺序和执行步骤 |
 | `status.md` | 当前进度、分支、阻塞点、跳过的文件 |
 | `decisions.md` | 兼容性选择、迁移决策、被拒绝的方案 |
-| `validation.md` | repo-local checks 和 cross-repo validation 结果 |
-| `prs.md` | PR 顺序、依赖关系、建议 commit message、迁移说明 |
+| `validation.md` | repo-local 编译和检查结果、已知失败、剩余风险 |
 
 这些文件是 session 中断后的恢复点。
 
@@ -265,38 +304,36 @@ agent 不应该：
 任务完成前确认：
 
 - 已检查每个 affected repo 的 git status
+- 已确认每个 affected repo 当前分支匹配 scenario 指定分支
 - 已读取 repo-local instructions，或记录缺失文件
 - source-of-truth repo 先于 downstream repo 修改
 - 生成文件按 repo-local 规则更新
 - repo-local checks 通过，或失败已记录原因和下一步
-- integration checks 通过，或失败已记录原因和下一步
 - task status 和 validation 文件已更新
-- PR 顺序和依赖关系清楚
+- 交付顺序和依赖关系清楚
 - 剩余风险已记录
 
 ## 第一次 dry run
 
-首次真实使用时，建议先手工跑一个小任务，不要急着加脚本：
+首次真实使用时，建议先手工跑一个小任务，不要急着加自动化：
 
 1. 替换 `repos.yaml` 中的占位 repo
 2. 用一个真实场景替换 `example-contract-change`
 3. 从 templates 创建 task 目录
 4. 要求 agent 执行场景，但不要 commit
 5. 检查 YAML 字段是否足够支持路径解析、repo entry、checks 和任务记录
-6. 只为 dry run 证明需要的重复机械步骤添加脚本
+6. 只为 dry run 证明需要的重复机械步骤添加自动化
 
-## 脚本边界
+## 未来自动化
 
-MVP 阶段优先使用文档，不急着写自动化脚本。
+MVP 阶段优先使用文档，不需要辅助脚本也能执行 scenario：agent 应按 scenario 顺序进入每个 affected repo，并直接运行 `repos.yaml` 中列出的 repo-local checks。
 
-脚本适合处理机械操作，例如：
+后续只有在重复机械步骤足够稳定时，再考虑增加自动化，例如：
 
 - 汇总 repo status
 - 准备分支
-- 运行 YAML 定义的 checks
-- 运行 integration smoke tests
 - 收集 diff summary
-- 生成 PR plan
+- 收集交付说明
 
 业务判断应该留在 scenario 文档和 task 记录里。
 
@@ -305,10 +342,10 @@ MVP 阶段优先使用文档，不急着写自动化脚本。
 第一次真实 scenario dry run 之后，按以下优先级逐步实践剩余设计：
 
 1. 强化 task templates 中的 quality gates。
-   - 在 `templates/validation-report.md` 或 `templates/task-status.md` 中加入 repo-local、cross-repo、delivery 三层 gate。
+   - 在 `templates/validation-report.md` 或 `templates/task-status.md` 中加入 repo-local 和 delivery gate。
    - 保持 checklist 形式，方便 agent 在执行过程中持续更新。
 
-2. 增加只读的 `scripts/repo-status`。
+2. 增加只读的 repo status helper。
    - 汇总每个 affected repo 的 branch、dirty state、untracked files 和 recent commits。
    - 保持非破坏性，用于任何 branch 或代码修改之前。
 
@@ -317,7 +354,7 @@ MVP 阶段优先使用文档，不急着写自动化脚本。
    - 优先输出 validation report，不做自动修复。
 
 4. 只有在频繁创建 task 时，才增加 task template generation。
-   - 从现有 templates 生成 `brief.md`、`plan.md`、`status.md`、`decisions.md`、`validation.md` 和 `prs.md`。
+   - 从现有 templates 生成 `spec.md`、`status.md`、`decisions.md` 和 `validation.md`。
    - 不隐藏 task 文件；它们仍然是 session 中断后的恢复点。
 
 ## 未来设计
@@ -329,9 +366,9 @@ MVP 阶段优先使用文档，不急着写自动化脚本。
 - 将 CLI 支持定位为机械、低风险步骤的辅助工具，而不是核心执行模型。适合的方向包括 YAML validation、repo status report、task skeleton generation 和 task summary。
 - 在手工 workflow 经过多次执行、命令边界足够稳定之前，不构建完整 CLI orchestrator。候选辅助命令可以是 `scenario prepare`、`scenario status`、`scenario check` 和 `scenario summary`。
 - 不把多 agent 编排当作目标。只有当真实 scenario 证明单 agent 串行执行无法管理上下文、repo 数量或验证复杂度时，才重新评估。
-- 默认不自动 commit 或创建 PR。未来如增加，也应作为显式 delivery mode，并继续保持每个 repo 独立记录 commit 或 PR plan。
+- 默认不自动 commit 或创建 PR。未来如增加，也应作为显式 delivery mode。
 - 暂缓复杂 branch management。任何 branch preparation 都应先检查 dirty state 和无关本地改动。
 
 ## 当前状态
 
-当前版本是 MVP skeleton，已经可以用于真实 repo 的手工 dry run。下一步成熟化方向是：用它跑一次真实跨 repo 场景，然后把重复且不需要判断的步骤沉淀成脚本。
+当前版本是 MVP skeleton，已经可以用于真实 repo 的手工 dry run。下一步成熟化方向是：用它跑一次真实跨 repo 场景，然后把重复且不需要判断的步骤沉淀成自动化。

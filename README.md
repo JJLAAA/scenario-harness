@@ -12,7 +12,27 @@ It does not replace Git, CI, PR review, or repo-local instructions. Its job is t
 - what order the repositories should be changed in
 - which repo-local instructions must be read
 - which checks prove the work is complete
-- where task progress, validation, decisions, and PR ordering are recorded
+- where task progress, validation, decisions, and delivery ordering are recorded
+
+## Why This Exists
+
+Coding agents increasingly need specs, instructions, and execution protocols to make code changes reliably. For a single repository, or a monorepo with shared tooling and unified review context, there are already many ways to give an agent that guidance: repo-local instructions, task specs, package scripts, tests, and project documentation.
+
+Many enterprise systems do not fit that shape. A real delivery scenario may span several independently owned repositories: an API service, a frontend, an SDK, a worker, infrastructure code, fixtures, or documentation. Those repositories may need to stay separate because of team ownership, access control, release cadence, compliance boundaries, or existing operational practice.
+
+The business change still has one logical shape even when the code lives in separate repos. The agent needs to know which repositories participate, which one must change first, which local instructions apply inside each repo, what checks to run, what decisions were made, and how to record progress across the whole scenario.
+
+Scenario Harness provides that missing scenario layer. It keeps the repositories independent while giving coding agents a minimal, explicit protocol for coordinated cross-repo development.
+
+## Relationship To Repo-Local Spec Frameworks
+
+Scenario Harness deliberately does not compete with single-repo or monorepo spec frameworks such as Spec Kit, OpenSpec, Trellis, or repo-specific agent workflows. It operates above them.
+
+Its current guarantee is explicit discovery and delegation: for each repository, a scenario can declare which repo-local instruction sources, spec directories, and key files an agent must read before making changes.
+
+It does not guarantee that framework-specific runtime mechanisms, such as hooks, slash commands, MCP servers, or injected context, will automatically activate after the agent enters a repository. Whether those mechanisms work depends on the agent runtime and framework implementation, and should be validated in practice for each framework.
+
+For hook-based frameworks, repositories should expose a static fallback entrypoint through `AGENTS.md`, `CLAUDE.md`, `README.md`, or scenario-defined `instruction_sources`, so the agent can still follow repo-local spec rules when runtime injection is unavailable.
 
 ## When To Use This
 
@@ -36,11 +56,19 @@ This project treats agent readability as a primary design requirement. Agents sh
 Required reading order:
 
 1. `AGENTS.md`
-2. `repos.yaml`
-3. `scenarios/<scenario>/scenario.yaml`
-4. `scenarios/<scenario>/README.md`
+2. `scenarios/<scenario>/scenario.yaml`
+3. `scenarios/<scenario>/README.md`
+4. `repos.yaml`, as a registry for only the repository keys selected by the scenario
 
-`AGENTS.md` defines the execution protocol and YAML semantics. `repos.yaml` defines stable repository metadata. Each scenario directory contains its own machine-readable execution config and human-readable SOP.
+`AGENTS.md` defines the execution protocol and YAML semantics. Each scenario directory contains its own machine-readable execution config and human-readable SOP. `repos.yaml` defines stable repository metadata and should be treated as a lookup table, not as the list of affected repositories for every scenario.
+
+Within a scenario directory, the files have different jobs:
+
+- `scenario.yaml` is the authoritative execution config: selected repos, execution order, repo-local instruction sources, and key files.
+- It also declares the exact branch expected for each repo through `repo_context.<repo>.branch`; agents stop and report if a repo is on any other branch.
+- `README.md` is the scenario SOP: business intent, rationale, invariants, compatibility guidance, completion criteria, risks, and judgment calls that do not fit cleanly in YAML.
+
+The README should not duplicate or override structural fields from `scenario.yaml`. If the two conflict on execution structure, follow `scenario.yaml` unless doing so would be destructive or unsafe. If they conflict on business intent, compatibility, or completion criteria, stop and report the conflict before editing repositories.
 
 ## Repository Structure
 
@@ -57,13 +85,9 @@ scenario-harness/
     README.md
   templates/
     decisions.md
-    pr-plan.md
-    task-brief.md
-    task-plan.md
+    spec.md
     task-status.md
     validation-report.md
-  scripts/
-    README.md
 ```
 
 ## Setup
@@ -132,6 +156,7 @@ order:
 
 repo_context:
   api:
+    branch: scenario/billing-contract-change
     instruction_sources:
       - AGENTS.md
       - CONTRIBUTING.md
@@ -140,14 +165,12 @@ repo_context:
       - openapi.yaml
       - src/contracts/
   web:
+    branch: scenario/billing-contract-change
     instruction_sources:
       - AGENTS.md
       - README.md
     key_files:
       - src/api/
-
-integration_checks:
-  - scripts/run-integration-checks billing-contract-change
 ```
 
 Place it at:
@@ -160,25 +183,32 @@ Then create `scenarios/billing-contract-change/README.md` for the scenario purpo
 
 ## Running A Task
 
-### 1. Create A Task Directory
+### 1. Create Or Select A Task Directory
 
-Use a stable task id. Date plus scenario name works well:
+A task directory records progress and lets an agent resume safely. If you already have one, pass it to the agent. If not, create one with a stable task id. Date plus scenario name works well:
 
 ```bash
 mkdir -p tasks/2026-05-20-billing-contract-change
-cp templates/task-brief.md tasks/2026-05-20-billing-contract-change/brief.md
-cp templates/task-plan.md tasks/2026-05-20-billing-contract-change/plan.md
+cp templates/spec.md tasks/2026-05-20-billing-contract-change/spec.md
 cp templates/task-status.md tasks/2026-05-20-billing-contract-change/status.md
 cp templates/decisions.md tasks/2026-05-20-billing-contract-change/decisions.md
 cp templates/validation-report.md tasks/2026-05-20-billing-contract-change/validation.md
-cp templates/pr-plan.md tasks/2026-05-20-billing-contract-change/prs.md
 ```
 
-Fill in `brief.md` with the user's request, scope, non-goals, and assumptions.
+Fill in `spec.md` with the user's request, scope, non-goals, assumptions, repository order, and execution steps.
+
+When resuming, the agent should read the existing task files before editing repositories:
+
+1. `spec.md`
+2. `status.md`
+3. `decisions.md`
+4. `validation.md`
+
+If the user asks to continue without naming a task directory, the agent should inspect `tasks/` for the matching scenario and continue the most recent incomplete task. If multiple plausible tasks exist, it should ask which one to use.
 
 ### 2. Ask An Agent To Execute The Scenario
 
-Start the agent in this harness directory and give it the scenario plus task directory.
+Start the agent in this harness directory and give it the scenario plus task directory when available.
 
 Example prompt:
 
@@ -186,12 +216,22 @@ Example prompt:
 Execute scenario billing-contract-change.
 Task directory: tasks/2026-05-20-billing-contract-change.
 
-Read AGENTS.md, repos.yaml, scenarios/billing-contract-change/scenario.yaml,
-and scenarios/billing-contract-change/README.md first.
+Read AGENTS.md, scenarios/billing-contract-change/scenario.yaml,
+scenarios/billing-contract-change/README.md, then the selected repo entries in repos.yaml.
 
 Then resolve repo paths, inspect git status for affected repos, enter repos in scenario order,
-read scenario-defined repo-local instruction sources, inspect key files, implement the requested change, run checks, and update
-the task status, validation report, decisions, and PR plan.
+verify each repo is on the branch specified by scenario.yaml, read scenario-defined repo-local instruction sources,
+inspect key files, implement the requested change, run checks, and update the task status, validation report, and decisions.
+Do not commit unless I explicitly ask.
+```
+
+To continue existing work:
+
+```text
+Continue scenario billing-contract-change.
+Task directory: tasks/2026-05-20-billing-contract-change.
+
+Read the task files first, then resume from the next incomplete step.
 Do not commit unless I explicitly ask.
 ```
 
@@ -215,18 +255,18 @@ That summary becomes the required context for the next repository unless debuggi
 The agent should:
 
 1. Read the required harness docs in order.
-2. Resolve affected repo paths from `repos.yaml`.
-3. Read `scenarios/<scenario>/scenario.yaml`.
-4. Read `scenarios/<scenario>/README.md`.
+2. Read `scenarios/<scenario>/scenario.yaml` to identify affected repository keys.
+3. Read `scenarios/<scenario>/README.md`.
+4. Resolve only those affected repo paths from `repos.yaml`.
 5. Inspect `git status` in each affected repo.
-6. Follow `scenarios.<name>.order`.
-7. For each repo, read scenario-defined `repo_context.<repo>.instruction_sources`.
-8. Inspect scenario-defined `repo_context.<repo>.key_files`.
-9. Implement repo-local changes.
-10. Run repo-local `checks`.
-11. Run `integration_checks`.
+6. Verify each affected repo's current branch exactly matches `repo_context.<repo>.branch`; stop and report before editing if it does not.
+7. Follow `scenarios.<name>.order`.
+8. For each repo, read scenario-defined `repo_context.<repo>.instruction_sources`.
+9. Inspect scenario-defined `repo_context.<repo>.key_files`.
+10. Implement repo-local changes.
+11. Run each affected repository's repo-local `checks`.
 12. Update task files under `tasks/<task-id>/`.
-13. Report diff scope, validation results, risks, and PR order.
+13. Report diff scope, validation results, risks, and delivery order.
 
 The agent should not:
 
@@ -234,6 +274,7 @@ The agent should not:
 - apply one repo's instructions to another repo
 - overwrite unrelated local changes
 - mix commits across repos
+- automatically checkout or create branches when the scenario branch check fails
 - commit or create PRs unless explicitly requested
 - guess YAML semantics when `AGENTS.md` defines them
 
@@ -243,12 +284,10 @@ Each task directory should contain:
 
 | File | Purpose |
 | --- | --- |
-| `brief.md` | User request, scope, non-goals, assumptions. |
-| `plan.md` | Repo order and step-by-step execution plan. |
+| `spec.md` | User request, scope, non-goals, assumptions, repo order, and execution steps. |
 | `status.md` | Current progress, branches, blockers, skipped files. |
 | `decisions.md` | Compatibility choices, migration decisions, rejected options. |
-| `validation.md` | Repo-local checks and cross-repo validation results. |
-| `prs.md` | PR order, dependencies, suggested commit messages, migration notes. |
+| `validation.md` | Repo-local build and check results, known failures, and residual risk. |
 
 These files are the recovery point if the session is interrupted.
 
@@ -257,13 +296,13 @@ These files are the recovery point if the session is interrupted.
 Before considering a task complete, verify:
 
 - every affected repo's git status was inspected
+- every affected repo's current branch matched the scenario-defined branch
 - repo-local instructions were read or missing files were recorded
 - source-of-truth repos were changed before downstream repos
 - generated artifacts were updated according to repo-local rules
 - repo-local checks passed or failures were documented
-- integration checks passed or failures were documented
 - task status and validation files are current
-- PR order and dependencies are clear
+- delivery order and dependencies are clear
 - remaining risk is documented
 
 ## Dry Run Checklist
@@ -275,20 +314,18 @@ For the first real use, run a small task manually before adding automation:
 3. Create a task directory from templates.
 4. Ask the agent to run the scenario without committing.
 5. Check whether the YAML fields were enough for path resolution, repo entry, checks, and task records.
-6. Add only the missing fields or scripts that the dry run proves are necessary.
+6. Add only the missing fields or automation that the dry run proves is necessary.
 
-## Scripts
+## Future Automation
 
-The MVP intentionally starts with documents before scripts.
+The MVP intentionally starts with documents before automation. No helper script is required to execute a scenario: the agent should enter each affected repository in scenario order and run the repo-local checks listed in `repos.yaml`.
 
-Add scripts only for repeated mechanical operations, such as:
+Add automation later only for repeated mechanical operations, such as:
 
 - reporting repo status
 - preparing branches
-- running YAML-defined checks
-- running integration smoke tests
 - collecting diff summaries
-- creating PR plans
+- collecting delivery notes
 
 Keep business judgment in scenario documents and task records.
 
@@ -297,10 +334,10 @@ Keep business judgment in scenario documents and task records.
 Implement the remaining ideas in this order, after the first real scenario dry run:
 
 1. Strengthen quality gates in task templates.
-   - Add repo-local, cross-repo, and delivery gate sections to `templates/validation-report.md` or `templates/task-status.md`.
+   - Add repo-local and delivery gate sections to `templates/validation-report.md` or `templates/task-status.md`.
    - Keep the gates checklist-oriented so agents can update them during execution.
 
-2. Add a read-only `scripts/repo-status`.
+2. Add a read-only repo status helper.
    - Report branch, dirty state, untracked files, and recent commits for each affected repo.
    - Keep it non-destructive and useful before any branch or code changes.
 
@@ -309,7 +346,7 @@ Implement the remaining ideas in this order, after the first real scenario dry r
    - Prefer validation reports over automatic fixes.
 
 4. Add task template generation only if task creation becomes frequent.
-   - Generate `brief.md`, `plan.md`, `status.md`, `decisions.md`, `validation.md`, and `prs.md` from the existing templates.
+   - Generate `spec.md`, `status.md`, `decisions.md`, and `validation.md` from the existing templates.
    - Do not hide the task files; they remain the recovery point for interrupted sessions.
 
 ## Future Design
@@ -321,9 +358,9 @@ These ideas are intentionally deferred until several manual runs prove they are 
 - Treat CLI support as a helper for mechanical, low-risk steps, not as the core execution model. Good candidates are YAML validation, repo status reports, task skeleton generation, and task summaries.
 - Do not build a full CLI orchestrator until the manual workflow has repeated enough to prove the command boundaries are stable. Candidate helper commands include `scenario prepare`, `scenario status`, `scenario check`, and `scenario summary`.
 - Do not treat multi-agent orchestration as a goal. Re-evaluate it only if real scenarios show that single-agent serial execution cannot manage context, repo count, or verification complexity.
-- Avoid automatic commits and PR creation by default. If added later, they should be explicit delivery modes and should still record one commit or PR plan per repository.
+- Avoid automatic commits and PR creation by default. If added later, they should be explicit delivery modes.
 - Avoid complex branch management until repeated tasks prove it saves time. Branch preparation should always inspect dirty state and unrelated local changes first.
 
 ## Current State
 
-This is an MVP skeleton. It is ready for a manual dry run against real repositories. The next maturity step is to use it on one real cross-repo scenario, then add scripts for the steps that repeat without requiring judgment.
+This is an MVP skeleton. It is ready for a manual dry run against real repositories. The next maturity step is to use it on one real cross-repo scenario, then add automation for the steps that repeat without requiring judgment.

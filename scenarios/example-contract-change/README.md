@@ -16,20 +16,21 @@ Use this scenario when a shared contract, schema, generated client, or source-of
 2. Run `contract-repo` checks.
 3. Generate or export downstream artifacts if the repo-local instructions require it.
 4. Update `consumer-repo` usage.
-5. Update `worker-repo` event or job handling.
-6. Run cross-repo integration checks.
+5. Run `consumer-repo` checks.
+6. Update `worker-repo` event or job handling.
+7. Run `worker-repo` checks.
 
 ## Cross-Repo Invariants
 
 - Contract version and generated artifacts must match.
 - Shared identifiers, event names, endpoint names, and payload fields must stay consistent across repositories.
-- Breaking changes require explicit migration notes in the task decisions or PR plan.
+- Breaking changes require explicit migration notes in the task decisions.
 - Generated files must not be edited manually unless repo-local instructions allow it.
 
 ## Completion Criteria
 
 - All affected repo git states are inspected and recorded.
+- Each affected repo is on the branch specified by `scenario.yaml`.
 - Repo-local instruction sources were read or missing files were documented.
 - Repo-defined checks passed or failures are documented with next steps.
-- Cross-repo integration checks passed or failures are documented with next steps.
-- PR order and dependencies are recorded.
+- Delivery order and dependencies are recorded in the task status or decisions.

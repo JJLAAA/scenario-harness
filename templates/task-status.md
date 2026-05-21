@@ -6,11 +6,11 @@ Task ID:
 
 ## Repositories
 
-| Repo | Status | Branch | Checks |
-| --- | --- | --- | --- |
-| contract-repo | not started | - | pending |
-| consumer-repo | not started | - | pending |
-| worker-repo | not started | - | pending |
+| Repo | Status | Expected Branch | Actual Branch | Checks |
+| --- | --- | --- | --- | --- |
+| contract-repo | not started | scenario/example-contract-change | - | pending |
+| consumer-repo | not started | scenario/example-contract-change | - | pending |
+| worker-repo | not started | scenario/example-contract-change | - | pending |
 
 ## Current Step
 
