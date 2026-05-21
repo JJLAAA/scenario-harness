@@ -52,6 +52,7 @@ Use `bin/scenario-harness` for mechanical checks before doing manual reasoning.
 
 - `bin/scenario-harness validate-scenario <scenario>` validates the selected scenario, `repos.yaml` references, resolved repository paths, branch gate declarations, and basic field shapes.
 - `bin/scenario-harness validate-scenario <scenario> --json` emits stable JSON for agents that want to parse findings.
+- `bin/scenario-harness init-task <scenario> [task-id] --request "..."` creates `spec.md`, `status.md`, `validation.md`, and `decisions.md` from the selected scenario without overwriting existing task files.
 
 Exit codes:
 
@@ -102,7 +103,8 @@ The active task directory is the recovery point for a scenario run.
 
 When creating a new task directory:
 
-- Copy the files from `templates/` into the task directory with these names:
+- Prefer `bin/scenario-harness init-task <scenario> [task-id] --request "..."`.
+- If the helper cannot be used, copy the files from `templates/` into the task directory with these names:
   - `spec.md` to `spec.md`
   - `task-status.md` to `status.md`
   - `decisions.md` to `decisions.md`

@@ -211,17 +211,17 @@ bin/scenario-harness validate-scenario billing-contract-change --json
 
 ### 1. 创建或选择任务目录
 
-任务目录用于记录进度，并让 agent 可以安全恢复。如果已有任务目录，直接提供给 agent。否则创建一个稳定的 task id，建议使用日期加场景名：
+任务目录用于记录进度，并让 agent 可以安全恢复。如果已有任务目录，直接提供给 agent。否则用 helper CLI 创建：
 
 ```bash
-mkdir -p tasks/2026-05-20-billing-contract-change
-cp templates/spec.md tasks/2026-05-20-billing-contract-change/spec.md
-cp templates/task-status.md tasks/2026-05-20-billing-contract-change/status.md
-cp templates/decisions.md tasks/2026-05-20-billing-contract-change/decisions.md
-cp templates/validation-report.md tasks/2026-05-20-billing-contract-change/validation.md
+bin/scenario-harness init-task billing-contract-change \
+  2026-05-20-billing-contract-change \
+  --request "Update billing API contract and downstream consumers."
 ```
 
-先填写 `spec.md`，记录用户需求、范围、非目标、初始假设、repo 顺序和执行步骤。
+如果省略 task id，helper 会使用 `YYYY-MM-DD-<scenario>`。它会根据 scenario 配置生成
+`spec.md`、`status.md`、`decisions.md` 和 `validation.md`，并且不会覆盖已有 task 文件。
+需要结构化输出时使用 `--json`。
 
 继续已有任务时，agent 应先读取这些 task 文件，再编辑业务 repo：
 

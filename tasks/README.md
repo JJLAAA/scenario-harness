@@ -23,7 +23,17 @@ decisions.md
 validation.md
 ```
 
-Start from the templates in `templates/`:
+Prefer creating task files with the helper CLI:
+
+```bash
+bin/scenario-harness init-task <scenario> [task-id] --request "..."
+```
+
+The helper fills repo order, branch gates, repo-local checks, instruction sources, and key files
+from the scenario configuration. It is idempotent for agent retries: existing task files are reported
+and are not overwritten.
+
+If the helper cannot be used, start from the templates in `templates/`:
 
 | Template | Task File |
 | --- | --- |

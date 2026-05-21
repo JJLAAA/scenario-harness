@@ -4,9 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
-import os
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -388,6 +387,231 @@ def validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
     }
 
 
+def scenario_context(root: Path, scenario: str) -> dict[str, Any]:
+    scenario_dir, scenario_data = load_scenario(root, scenario)
+    repos_registry = load_repos(root)
+    repos, order = selected_repo_keys(scenario_data)
+    repo_context = scenario_data.get("repo_context")
+    if not isinstance(repo_context, dict):
+        repo_context = {}
+
+    selected = order or repos
+    entries: list[dict[str, Any]] = []
+    for repo_key in selected:
+        registry_entry = repos_registry.get(repo_key)
+        context_entry = repo_context.get(repo_key)
+        if not isinstance(registry_entry, dict):
+            registry_entry = {}
+        if not isinstance(context_entry, dict):
+            context_entry = {}
+        raw_path = registry_entry.get("path")
+        resolved_path = None
+        if isinstance(raw_path, str) and raw_path:
+            resolved_path = str(resolve_harness_path(root, raw_path))
+        entries.append(
+            {
+                "key": repo_key,
+                "path": resolved_path,
+                "role": registry_entry.get("role"),
+                "description": registry_entry.get("description"),
+                "expected_branch": context_entry.get("branch"),
+                "instruction_sources": context_entry.get("instruction_sources") or [],
+                "key_files": context_entry.get("key_files") or [],
+                "checks": registry_entry.get("checks") or [],
+            }
+        )
+
+    return {
+        "scenario": scenario,
+        "description": scenario_data.get("description") or "",
+        "scenario_dir": str(scenario_dir),
+        "repos": entries,
+    }
+
+
+def markdown_list(items: list[str], empty: str = "None.") -> str:
+    if not items:
+        return empty
+    return "\n".join(f"- `{item}`" for item in items)
+
+
+def render_task_files(context: dict[str, Any], task_id: str, request: str) -> dict[str, str]:
+    repos = context["repos"]
+    order_lines = "\n".join(f"{index}. `{repo['key']}`" for index, repo in enumerate(repos, 1))
+    scope_lines = "\n".join(
+        f"- `{repo['key']}`: {repo.get('description') or repo.get('role') or 'Scenario participant.'}"
+        for repo in repos
+    )
+
+    step_rows = []
+    step_index = 1
+    for repo in repos:
+        repo_key = repo["key"]
+        step_rows.append(
+            f"| {step_index} | {repo_key} | Inspect status, verify branch, read instructions, and inspect key files | pending |"
+        )
+        step_index += 1
+        step_rows.append(f"| {step_index} | {repo_key} | Implement repo-local change | pending |")
+        step_index += 1
+        step_rows.append(f"| {step_index} | {repo_key} | Run repo-local checks | pending |")
+        step_index += 1
+    step_rows.append(f"| {step_index} | all | Update validation and final task status | pending |")
+
+    status_rows = "\n".join(
+        f"| {repo['key']} | not started | {repo.get('expected_branch') or 'TBD'} | - | pending |"
+        for repo in repos
+    )
+    branch_rows = "\n".join(
+        f"| {repo['key']} | {repo.get('expected_branch') or 'TBD'} | TBD | pending |"
+        for repo in repos
+    )
+    check_rows: list[str] = []
+    for repo in repos:
+        checks = repo.get("checks") or []
+        if checks:
+            for command in checks:
+                check_rows.append(f"| {repo['key']} | `{command}` | pending |  |")
+        else:
+            check_rows.append(f"| {repo['key']} | TBD | pending | No checks declared in repos.yaml. |")
+
+    details = []
+    for repo in repos:
+        details.append(
+            "\n".join(
+                [
+                    f"### `{repo['key']}`",
+                    "",
+                    f"- Path: `{repo.get('path') or 'TBD'}`",
+                    f"- Expected branch: `{repo.get('expected_branch') or 'TBD'}`",
+                    "- Instruction sources:",
+                    markdown_list(repo.get("instruction_sources") or []),
+                    "- Key files:",
+                    markdown_list(repo.get("key_files") or []),
+                    "- Checks:",
+                    markdown_list(repo.get("checks") or []),
+                ]
+            )
+        )
+
+    spec = f"""# Task Spec
+
+## Scenario
+
+`{context['scenario']}`
+
+{context['description']}
+
+## User Request
+
+{request or 'TBD.'}
+
+## Scope
+
+{scope_lines or 'TBD.'}
+
+## Non-Goals
+
+- Do not commit unless explicitly requested.
+- Do not edit repositories outside the scenario order.
+- Do not overwrite unrelated local changes.
+
+## Assumptions
+
+- The scenario configuration is authoritative for repository order and branch gates.
+- Repository-local instructions remain authoritative inside each business repository.
+
+## Scenario Order
+
+{order_lines or 'TBD.'}
+
+## Repository Context
+
+{chr(10).join(details) if details else 'TBD.'}
+
+## Steps
+
+| Step | Repo | Action | Status |
+| --- | --- | --- | --- |
+{chr(10).join(step_rows)}
+
+## Open Questions
+
+None.
+"""
+
+    status = f"""# Status
+
+Scenario: `{context['scenario']}`
+
+Task ID: `{task_id}`
+
+## Repositories
+
+| Repo | Status | Expected Branch | Actual Branch | Checks |
+| --- | --- | --- | --- | --- |
+{status_rows}
+
+## Current Step
+
+Task initialized. Next step: run preflight before entering business repositories.
+
+## Blockers
+
+None.
+
+## Notes
+
+- Generated by `bin/scenario-harness init-task`.
+"""
+
+    validation = f"""# Validation Report
+
+## Branch Gates
+
+| Repo | Expected Branch | Actual Branch | Result |
+| --- | --- | --- | --- |
+{branch_rows}
+
+## Repo-Local Checks
+
+| Repo | Command | Result | Notes |
+| --- | --- | --- | --- |
+{chr(10).join(check_rows)}
+
+## Known Failures
+
+None.
+
+## Residual Risk
+
+TBD after checks run.
+"""
+
+    decisions = f"""# Decisions
+
+## Accepted
+
+| Date | Decision | Reason | Impact |
+| --- | --- | --- | --- |
+
+## Rejected
+
+| Date | Option | Reason Rejected |
+| --- | --- | --- |
+
+## Notes
+
+- Generated by `bin/scenario-harness init-task`.
+"""
+
+    return {
+        "spec.md": spec,
+        "status.md": status,
+        "validation.md": validation,
+        "decisions.md": decisions,
+    }
+
+
 def print_text_report(report: dict[str, Any]) -> None:
     print(f"scenario: {report['scenario']}")
     print(f"status: {report['status']}")
@@ -425,6 +649,70 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return EXIT_OK if report["status"] == "ok" else EXIT_VALIDATION
 
 
+def cmd_init_task(args: argparse.Namespace) -> int:
+    root = harness_root()
+    validation = validate_scenario(root, args.scenario)
+    if validation["status"] != "ok" and not args.allow_invalid:
+        result = {
+            "status": "error",
+            "scenario": args.scenario,
+            "message": "Scenario validation failed; task files were not created.",
+            "fix": "Fix validation findings or pass --allow-invalid to create recovery files anyway.",
+            "findings": validation["findings"],
+        }
+        if args.json:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print("error: Scenario validation failed; task files were not created.", file=sys.stderr)
+            print("fix: Fix validation findings or pass --allow-invalid to create recovery files anyway.", file=sys.stderr)
+        return EXIT_VALIDATION
+
+    context = scenario_context(root, args.scenario)
+    task_id = args.task_id or f"{dt.date.today().isoformat()}-{args.scenario}"
+    task_dir = root / "tasks" / task_id
+    files = render_task_files(context, task_id, args.request or "")
+
+    created: list[str] = []
+    existing: list[str] = []
+    if not args.dry_run:
+        task_dir.mkdir(parents=True, exist_ok=True)
+        for name, content in files.items():
+            path = task_dir / name
+            if path.exists():
+                existing.append(str(path))
+                continue
+            path.write_text(content, encoding="utf-8")
+            created.append(str(path))
+    else:
+        created = [str(task_dir / name) for name in files]
+
+    status = "created" if created and not existing else "exists" if existing and not created else "partial"
+    result = {
+        "status": status,
+        "scenario": args.scenario,
+        "task_id": task_id,
+        "task_dir": str(task_dir),
+        "created": created,
+        "existing": existing,
+        "dry_run": args.dry_run,
+    }
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        print(f"status: {status}")
+        print(f"task_dir: {task_dir}")
+        if created:
+            print("created:")
+            for path in created:
+                print(f"- {path}")
+        if existing:
+            print("existing:")
+            for path in existing:
+                print(f"- {path}")
+            print("note: existing task files were not overwritten")
+    return EXIT_OK
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="scenario-harness",
@@ -439,6 +727,22 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("scenario", help="Scenario directory name under scenarios/.")
     validate.add_argument("--json", action="store_true", help="Emit stable JSON output.")
     validate.set_defaults(func=cmd_validate)
+
+    init_task = subparsers.add_parser(
+        "init-task",
+        help="Create scenario task files from scenario.yaml without overwriting existing files.",
+    )
+    init_task.add_argument("scenario", help="Scenario directory name under scenarios/.")
+    init_task.add_argument("task_id", nargs="?", help="Task directory name under tasks/.")
+    init_task.add_argument("--request", default="", help="User request text to place in spec.md.")
+    init_task.add_argument(
+        "--allow-invalid",
+        action="store_true",
+        help="Create task files even when scenario validation reports errors.",
+    )
+    init_task.add_argument("--dry-run", action="store_true", help="Preview files without writing them.")
+    init_task.add_argument("--json", action="store_true", help="Emit stable JSON output.")
+    init_task.set_defaults(func=cmd_init_task)
 
     return parser
 

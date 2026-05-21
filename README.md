@@ -203,17 +203,17 @@ and exits non-zero when the scenario is not safe to execute.
 
 ### 1. Create Or Select A Task Directory
 
-A task directory records progress and lets an agent resume safely. If you already have one, pass it to the agent. If not, create one with a stable task id. Date plus scenario name works well:
+A task directory records progress and lets an agent resume safely. If you already have one, pass it to the agent. If not, create one with the helper CLI:
 
 ```bash
-mkdir -p tasks/2026-05-20-billing-contract-change
-cp templates/spec.md tasks/2026-05-20-billing-contract-change/spec.md
-cp templates/task-status.md tasks/2026-05-20-billing-contract-change/status.md
-cp templates/decisions.md tasks/2026-05-20-billing-contract-change/decisions.md
-cp templates/validation-report.md tasks/2026-05-20-billing-contract-change/validation.md
+bin/scenario-harness init-task billing-contract-change \
+  2026-05-20-billing-contract-change \
+  --request "Update billing API contract and downstream consumers."
 ```
 
-Fill in `spec.md` with the user's request, scope, non-goals, assumptions, repository order, and execution steps.
+If the task id is omitted, the helper uses `YYYY-MM-DD-<scenario>`. It creates `spec.md`,
+`status.md`, `decisions.md`, and `validation.md` from the scenario configuration and does not
+overwrite existing task files. Pass `--json` for structured output.
 
 When resuming, the agent should read the existing task files before editing repositories:
 
