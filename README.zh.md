@@ -395,38 +395,86 @@ agent 不应该：
 helper CLI 负责重复机械步骤：校验、初始化 task、捕获 preflight 状态、发现 task、压缩计划和执行 checks。
 业务判断应该留在 scenario 文档和 task 记录里。
 
-## 实践路线
+## 未来交付层
 
-第一次真实 scenario dry run 之后，按以下优先级逐步实践剩余设计：
+当前 helper CLI 覆盖的是本地执行层：
 
-1. 强化 task templates 中的 quality gates。
-   - 在 `templates/validation-report.md` 或 `templates/task-status.md` 中加入 repo-local 和 delivery gate。
-   - 保持 checklist 形式，方便 agent 在执行过程中持续更新。
+```text
+validate scenario -> plan scenario -> init/select task -> preflight -> implement repos -> run checks
+```
 
-2. 增加只读的 repo status helper。
-   - 汇总每个 affected repo 的 branch、dirty state、untracked files 和 recent commits。
-   - 保持非破坏性，用于任何 branch 或代码修改之前。
+下一步成熟化方向是在本地 workflow 外围增加交付编排层。它不替代 repo-local 开发规则，也不替代
+CI/CD 平台，而是为 agent 明确标出 issue、CI、Git hosting、部署平台 CLI 或 MCP 工具应该插入的位置。
 
-3. 在 YAML 结构稳定后增加配置校验。
-   - 检查必填字段、无法解析的路径、缺失的 scenario 文档，以及 scenario 引用但未在 `repos.yaml` 声明的 repo。
-   - 优先输出 validation report，不做自动修复。
+推荐生命周期：
 
-4. 只有在频繁创建 task 时，才增加 task template generation。
-   - 从现有 templates 生成 `spec.md`、`status.md`、`decisions.md` 和 `validation.md`。
-   - 不隐藏 task 文件；它们仍然是 session 中断后的恢复点。
+```text
+1. Intake / 创建交付需求
+2. Validate scenario
+3. 初始化或恢复 task
+4. 准备分支
+5. Preflight
+6. 实施 repo-local 修改
+7. 运行本地 checks
+8. Commit 并 push 分支
+9. 创建或更新 PR
+10. 收集 CI 状态
+11. 部署或发布
+12. 收口 task 并回填外部需求
+```
 
-## 未来设计
+未来 delivery commands 应和本地执行 commands 分层：
 
-以下设计应等多次手工执行证明必要后再实现：
+| 阶段 | 插入位置 | 未来命令形态 | 更新记录 |
+| --- | --- | --- | --- |
+| Intake | `validate-scenario` 之前或之后 | `intake <scenario> --task <task-id>` | `spec.md`, `status.md` |
+| 分支准备 | `init-task` 之后，`preflight` 之前 | `branches <scenario> --task <task-id> --create` | `status.md`, `validation.md` |
+| Commit | 本地 checks 通过之后 | `commits <scenario> --task <task-id>` | `status.md`, `decisions.md` |
+| Push | 本地确认 commits 之后 | `push <scenario> --task <task-id>` | `status.md` |
+| PR | push 之后 | `prs <scenario> --task <task-id> --create` | `status.md` |
+| CI | PR 创建后或 push 触发 CI 后 | `ci <scenario> --task <task-id>` | `validation.md` |
+| Deploy | CI 通过并满足审批后 | `deploy <scenario> --task <task-id> --env staging` | `validation.md`, `status.md`, `decisions.md` |
+| Closeout | 部署完成或明确停止后 | `closeout <scenario> --task <task-id>` | 所有 task 文件、外部 ticket |
 
-- 保持 harness 作为 standalone coordination repository。
-- 保留 Trellis 和 meta-repo 相关设计理由：harness 不应绑定某个 repo-local workflow 系统，也不应只解决文件系统聚合问题，而应直接编码交付语义。
-- 将 CLI 支持定位为机械、低风险步骤的辅助工具，而不是核心执行模型。适合的方向包括 YAML validation、repo status report、task skeleton generation 和 task summary。
-- 在手工 workflow 经过多次执行、命令边界足够稳定之前，不构建完整 CLI orchestrator。候选辅助命令可以是 `scenario prepare`、`scenario status`、`scenario check` 和 `scenario summary`。
-- 不把多 agent 编排当作目标。只有当真实 scenario 证明单 agent 串行执行无法管理上下文、repo 数量或验证复杂度时，才重新评估。
-- 默认不自动 commit 或创建 PR。未来如增加，也应作为显式 delivery mode。
-- 暂缓复杂 branch management。任何 branch preparation 都应先检查 dirty state 和无关本地改动。
+未来交付层的安全规则：
+
+- 默认只做只读检查，除非命令名和 flag 明确表示会产生副作用。
+- 对外部状态变更必须要求显式 flag，例如 `--create`、`--push`、`--deploy`、`--close`。
+- 不隐式创建、切换、rebase、reset、commit、push、merge、deploy 或关闭外部 ticket。
+- 每个 repo 独立处理；永远不要跨 repo 混合 commit。
+- dirty worktree 时停止，除非 task 记录明确说明这些改动是预期状态。
+- 在 task 文件中记录外部 ID 和链接：issue、branch、commit SHA、PR、CI run、deployment、release、rollback notes。
+- 业务判断留在 scenario README 和 task records 中。交付层只编排机械的平台操作，不自行决定兼容性、迁移、发布顺序或风险接受。
+
+当真实交付运行证明字段形态稳定后，可以考虑增加这样的 scenario 字段：
+
+```yaml
+delivery:
+  external_tracking:
+    system: jira
+    project: BILLING
+  branch:
+    create_from: default_branch
+  pull_requests:
+    base: main
+    labels:
+      - scenario
+  deploy_order:
+    - contract-repo
+    - consumer-repo
+    - worker-repo
+  environments:
+    - staging
+    - production
+  gates:
+    staging_required: true
+    production_requires_approval: true
+```
+
+只有当部署命令确实是 scenario-specific 时，才把 repo-specific deployment commands 写进 `repo_context`。
+稳定的 repo-owned 部署规则应继续留在业务 repo 或 CI/CD 平台中。
 
 ## 当前状态
 
-当前版本是 MVP skeleton，已经可以用于真实 repo 的手工 dry run。下一步成熟化方向是：用它跑一次真实跨 repo 场景，然后把重复且不需要判断的步骤沉淀成自动化。
+当前实现已经可以支持带 helper CLI 的本地跨 repo 执行。下一步成熟化方向是：用它跑一次真实跨 repo
+场景，然后只为那些重复且不需要业务判断的平台操作增加 delivery-layer adapters。

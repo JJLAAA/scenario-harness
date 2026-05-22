@@ -390,38 +390,89 @@ The helper CLI is responsible for repeated mechanical operations: validation, ta
 preflight state capture, task discovery, compact planning, and check execution. Keep business
 judgment in scenario documents and task records.
 
-## Practice Roadmap
+## Future Delivery Layer
 
-Implement the remaining ideas in this order, after the first real scenario dry run:
+The current helper CLI covers the local execution layer:
 
-1. Strengthen quality gates in task templates.
-   - Add repo-local and delivery gate sections to `templates/validation-report.md` or `templates/task-status.md`.
-   - Keep the gates checklist-oriented so agents can update them during execution.
+```text
+validate scenario -> plan scenario -> init/select task -> preflight -> implement repos -> run checks
+```
 
-2. Add a read-only repo status helper.
-   - Report branch, dirty state, untracked files, and recent commits for each affected repo.
-   - Keep it non-destructive and useful before any branch or code changes.
+The next maturity step is a delivery orchestration layer around that local workflow. It should not
+replace repo-local development rules or CI/CD systems. It should give agents explicit insertion
+points for existing issue, CI, Git hosting, and deployment CLIs or MCP tools.
 
-3. Add YAML validation after the configuration shape stabilizes.
-   - Check required fields, unresolved paths, missing scenario documents, and scenario repos that are not declared in `repos.yaml`.
-   - Prefer validation reports over automatic fixes.
+Recommended lifecycle:
 
-4. Add task template generation only if task creation becomes frequent.
-   - Generate `spec.md`, `status.md`, `decisions.md`, and `validation.md` from the existing templates.
-   - Do not hide the task files; they remain the recovery point for interrupted sessions.
+```text
+1. Intake / create delivery item
+2. Validate scenario
+3. Initialize or resume task
+4. Prepare branches
+5. Preflight
+6. Implement repo-local changes
+7. Run local checks
+8. Commit and push branches
+9. Create or update PRs
+10. Collect CI status
+11. Deploy or release
+12. Close out task and external tracking
+```
 
-## Future Design
+Future delivery commands should be layered separately from local execution commands:
 
-These ideas are intentionally deferred until several manual runs prove they are needed:
+| Stage | Insertion Point | Future Command Shape | Records To Update |
+| --- | --- | --- | --- |
+| Intake | Before or immediately after `validate-scenario` | `intake <scenario> --task <task-id>` | `spec.md`, `status.md` |
+| Branch preparation | After `init-task`, before `preflight` | `branches <scenario> --task <task-id> --create` | `status.md`, `validation.md` |
+| Commit | After local checks pass | `commits <scenario> --task <task-id>` | `status.md`, `decisions.md` |
+| Push | After commits are reviewed locally | `push <scenario> --task <task-id>` | `status.md` |
+| PRs | After push | `prs <scenario> --task <task-id> --create` | `status.md` |
+| CI | After PR creation or push-triggered CI | `ci <scenario> --task <task-id>` | `validation.md` |
+| Deploy | After CI passes and approvals are satisfied | `deploy <scenario> --task <task-id> --env staging` | `validation.md`, `status.md`, `decisions.md` |
+| Closeout | After deployment or explicit stop | `closeout <scenario> --task <task-id>` | all task files, external ticket |
 
-- Keep the harness as a standalone coordination repository.
-- Keep the Trellis and meta-repo rationale as design guidance: this harness should stay independent of any single repo-local workflow system and should encode delivery semantics directly.
-- Treat CLI support as a helper for mechanical, low-risk steps, not as the core execution model. Good candidates are YAML validation, repo status reports, task skeleton generation, and task summaries.
-- Do not build a full CLI orchestrator until the manual workflow has repeated enough to prove the command boundaries are stable. Candidate helper commands include `scenario prepare`, `scenario status`, `scenario check`, and `scenario summary`.
-- Do not treat multi-agent orchestration as a goal. Re-evaluate it only if real scenarios show that single-agent serial execution cannot manage context, repo count, or verification complexity.
-- Avoid automatic commits and PR creation by default. If added later, they should be explicit delivery modes.
-- Avoid complex branch management until repeated tasks prove it saves time. Branch preparation should always inspect dirty state and unrelated local changes first.
+Safety rules for the future delivery layer:
+
+- Default to read-only inspection unless the command name and flags clearly imply a side effect.
+- Require explicit flags for external-state changes, such as `--create`, `--push`, `--deploy`, or `--close`.
+- Never create, switch, rebase, reset, commit, push, merge, deploy, or close external tickets implicitly.
+- Treat each repository independently; never mix commits across repositories.
+- Stop on dirty worktrees unless the task record explicitly says the changes are expected.
+- Record external IDs and links in task files: issue, branch, commit SHA, PR, CI run, deployment, release, and rollback notes.
+- Keep business judgment in scenario README files and task records. The delivery layer should orchestrate mechanical platform operations, not decide compatibility, migration, release order, or risk acceptance by itself.
+
+Suggested future scenario fields, once real delivery runs prove the shape:
+
+```yaml
+delivery:
+  external_tracking:
+    system: jira
+    project: BILLING
+  branch:
+    create_from: default_branch
+  pull_requests:
+    base: main
+    labels:
+      - scenario
+  deploy_order:
+    - contract-repo
+    - consumer-repo
+    - worker-repo
+  environments:
+    - staging
+    - production
+  gates:
+    staging_required: true
+    production_requires_approval: true
+```
+
+Repo-specific deployment commands should live under `repo_context` only when they are truly
+scenario-specific. Stable repo-owned deployment rules should remain in the repo or its CI/CD
+platform.
 
 ## Current State
 
-This is an MVP skeleton. It is ready for a manual dry run against real repositories. The next maturity step is to use it on one real cross-repo scenario, then add automation for the steps that repeat without requiring judgment.
+The current implementation is ready for local cross-repo execution with helper CLI support. The next
+maturity step is to use it on one real cross-repo scenario, then add delivery-layer adapters only for
+the platform operations that repeat without requiring business judgment.
