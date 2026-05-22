@@ -1,30 +1,30 @@
 repos:
-  contract-repo:
-    path: ../contract-repo
+  profile-api:
+    path: ../profile-api
     role: contract-source
-    description: Owns the shared contract, schema, or source-of-truth domain model.
+    description: Owns the Profile API contract and example implementation.
     default_branch: main
     branch_prefix: scenario
     checks:
-      - npm run lint
       - npm run typecheck
       - npm test
 
-  consumer-repo:
-    path: ../consumer-repo
-    role: downstream-consumer
-    description: Consumes artifacts, APIs, events, or generated clients from the contract repository.
+  profile-web:
+    path: ../profile-web
+    role: downstream-ui
+    description: Renders profile data returned by the Profile API.
     default_branch: main
     branch_prefix: scenario
     checks:
-      - pnpm typecheck
-      - pnpm test
+      - npm run typecheck
+      - npm test
 
-  worker-repo:
-    path: ../worker-repo
-    role: async-worker
-    description: Processes events, jobs, or background workflows related to the scenario.
+  notification-worker:
+    path: ../notification-worker
+    role: async-consumer
+    description: Builds notification copy from profile payloads.
     default_branch: main
     branch_prefix: scenario
     checks:
-      - make test
+      - npm run typecheck
+      - npm test
