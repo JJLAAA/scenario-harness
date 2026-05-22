@@ -323,16 +323,17 @@ The agent should:
 1. Read the required harness docs in order.
 2. Read `scenarios/<scenario>/scenario.yaml` to identify affected repository keys.
 3. Read `scenarios/<scenario>/README.md`.
-4. Resolve only those affected repo paths from `repos.yaml`.
-5. Inspect `git status` in each affected repo.
-6. Verify each affected repo's current branch exactly matches `repo_context.<repo>.branch`; stop and report before editing if it does not.
-7. Follow `scenarios.<name>.order`.
-8. For each repo, read scenario-defined `repo_context.<repo>.instruction_sources`.
-9. Inspect scenario-defined `repo_context.<repo>.key_files`.
-10. Implement repo-local changes.
-11. Run each affected repository's repo-local `checks`.
-12. Update task files under `tasks/<task-id>/`.
-13. Report diff scope, validation results, risks, and delivery order.
+4. Run `bin/scenario-harness validate-scenario <scenario>`.
+5. Use `bin/scenario-harness plan-scenario <scenario>` to carry a compact execution summary.
+6. Create or select task files with `bin/scenario-harness init-task` or `bin/scenario-harness list-tasks`.
+7. Run `bin/scenario-harness preflight <scenario> --task <task-id>` before entering business repos.
+8. Follow `scenarios.<name>.order`.
+9. For each repo, read scenario-defined `repo_context.<repo>.instruction_sources`.
+10. Inspect scenario-defined `repo_context.<repo>.key_files`.
+11. Implement repo-local changes.
+12. Run each affected repository's repo-local `checks`, preferably through `bin/scenario-harness checks <scenario> --run --task <task-id>`.
+13. Update task files under `tasks/<task-id>/`.
+14. Report diff scope, validation results, risks, and delivery order.
 
 The agent should not:
 
@@ -371,29 +372,23 @@ Before considering a task complete, verify:
 - delivery order and dependencies are clear
 - remaining risk is documented
 
-## Dry Run Checklist
+## Helper CLI Checklist
 
-For the first real use, run a small task manually before adding automation:
+For the first real use, run a small task through the helper CLI without committing:
 
 1. Replace placeholder repos in `repos.yaml`.
 2. Replace `example-contract-change` with one real scenario.
-3. Create a task directory from templates.
-4. Ask the agent to run the scenario without committing.
-5. Check whether the YAML fields were enough for path resolution, repo entry, checks, and task records.
-6. Add only the missing fields or automation that the dry run proves is necessary.
+3. Run `bin/scenario-harness validate-scenario <scenario>`.
+4. Run `bin/scenario-harness plan-scenario <scenario> --json` and confirm the selected repos and order.
+5. Run `bin/scenario-harness init-task <scenario> <task-id> --request "..."`.
+6. Run `bin/scenario-harness preflight <scenario> --task <task-id>`.
+7. Ask the agent to execute the scenario without committing.
+8. Run `bin/scenario-harness checks <scenario> --run --task <task-id>` after repo-local changes.
+9. Confirm `status.md`, `validation.md`, and `decisions.md` contain the recovery information needed for resume.
 
-## Future Automation
-
-The MVP intentionally starts with documents before automation. No helper script is required to execute a scenario: the agent should enter each affected repository in scenario order and run the repo-local checks listed in `repos.yaml`.
-
-Add automation later only for repeated mechanical operations, such as:
-
-- reporting repo status
-- preparing branches
-- collecting diff summaries
-- collecting delivery notes
-
-Keep business judgment in scenario documents and task records.
+The helper CLI is responsible for repeated mechanical operations: validation, task initialization,
+preflight state capture, task discovery, compact planning, and check execution. Keep business
+judgment in scenario documents and task records.
 
 ## Practice Roadmap
 

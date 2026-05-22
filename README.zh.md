@@ -329,16 +329,17 @@ agent 应该：
 1. 按顺序阅读 harness 文档
 2. 阅读 `scenarios/<scenario>/scenario.yaml`，确定 affected repo key
 3. 阅读 `scenarios/<scenario>/README.md`
-4. 只从 `repos.yaml` 解析这些 affected repo 的路径和元数据
-5. 检查每个 affected repo 的 `git status`
-6. 检查每个 affected repo 当前分支是否精确匹配 `repo_context.<repo>.branch`；不匹配时在编辑前停止并反馈
-7. 按 `scenarios.<name>.order` 执行
-8. 进入每个 repo 后读取 scenario 定义的 `repo_context.<repo>.instruction_sources`
-9. 检查 scenario 定义的 `repo_context.<repo>.key_files`
-10. 实施 repo-local 修改
-11. 运行每个 affected repo 的 repo-local `checks`
-12. 更新 `tasks/<task-id>/` 下的任务文件
-13. 汇报 diff 范围、验证结果、风险和交付顺序
+4. 运行 `bin/scenario-harness validate-scenario <scenario>`
+5. 用 `bin/scenario-harness plan-scenario <scenario>` 携带压缩后的执行摘要
+6. 用 `bin/scenario-harness init-task` 或 `bin/scenario-harness list-tasks` 创建或选择 task 文件
+7. 进入业务 repo 前运行 `bin/scenario-harness preflight <scenario> --task <task-id>`
+8. 按 `scenarios.<name>.order` 执行
+9. 进入每个 repo 后读取 scenario 定义的 `repo_context.<repo>.instruction_sources`
+10. 检查 scenario 定义的 `repo_context.<repo>.key_files`
+11. 实施 repo-local 修改
+12. 运行每个 affected repo 的 repo-local `checks`，优先使用 `bin/scenario-harness checks <scenario> --run --task <task-id>`
+13. 更新 `tasks/<task-id>/` 下的任务文件
+14. 汇报 diff 范围、验证结果、风险和交付顺序
 
 agent 不应该：
 
@@ -377,28 +378,21 @@ agent 不应该：
 - 交付顺序和依赖关系清楚
 - 剩余风险已记录
 
-## 第一次 dry run
+## Helper CLI 检查清单
 
-首次真实使用时，建议先手工跑一个小任务，不要急着加自动化：
+首次真实使用时，用 helper CLI 跑一个小任务，但不要 commit：
 
 1. 替换 `repos.yaml` 中的占位 repo
 2. 用一个真实场景替换 `example-contract-change`
-3. 从 templates 创建 task 目录
-4. 要求 agent 执行场景，但不要 commit
-5. 检查 YAML 字段是否足够支持路径解析、repo entry、checks 和任务记录
-6. 只为 dry run 证明需要的重复机械步骤添加自动化
+3. 运行 `bin/scenario-harness validate-scenario <scenario>`
+4. 运行 `bin/scenario-harness plan-scenario <scenario> --json`，确认 selected repos 和 order
+5. 运行 `bin/scenario-harness init-task <scenario> <task-id> --request "..."`
+6. 运行 `bin/scenario-harness preflight <scenario> --task <task-id>`
+7. 要求 agent 执行场景，但不要 commit
+8. repo-local 修改后运行 `bin/scenario-harness checks <scenario> --run --task <task-id>`
+9. 确认 `status.md`、`validation.md` 和 `decisions.md` 包含恢复任务所需的信息
 
-## 未来自动化
-
-MVP 阶段优先使用文档，不需要辅助脚本也能执行 scenario：agent 应按 scenario 顺序进入每个 affected repo，并直接运行 `repos.yaml` 中列出的 repo-local checks。
-
-后续只有在重复机械步骤足够稳定时，再考虑增加自动化，例如：
-
-- 汇总 repo status
-- 准备分支
-- 收集 diff summary
-- 收集交付说明
-
+helper CLI 负责重复机械步骤：校验、初始化 task、捕获 preflight 状态、发现 task、压缩计划和执行 checks。
 业务判断应该留在 scenario 文档和 task 记录里。
 
 ## 实践路线
