@@ -4,13 +4,13 @@
 
 | Repo | Expected Branch | Actual Branch | Result |
 | --- | --- | --- | --- |
-| repo-key-from-scenario-order | expected-branch-from-scenario-yaml | TBD | pending |
+| repo-key-from-scenario-order | expected-branch-from-task | TBD | pending |
 
 ## Repo-Local Checks
 
 | Repo | Command | Result | Notes |
 | --- | --- | --- | --- |
-| repo-key-from-scenario-order | command-from-repos-yaml-checks | pending |  |
+| repo-key-from-scenario-order | command-from-scenario-yaml-checks | pending |  |
 
 ## Known Failures
 

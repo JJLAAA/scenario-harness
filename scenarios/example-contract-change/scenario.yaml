@@ -1,18 +1,20 @@
 description: Update a source-of-truth contract and synchronize downstream consumers.
 
-repos:
-  - contract-repo
-  - consumer-repo
-  - worker-repo
-
 order:
   - contract-repo
   - consumer-repo
   - worker-repo
 
-repo_context:
+repos:
   contract-repo:
-    branch: scenario/example-contract-change
+    path: ../profile-api
+    role: contract-source
+    description: Owns the source-of-truth contract and example implementation.
+    outputs:
+      - id: profile-client
+        type: npm-package
+        name: "@company/profile-client"
+        description: Generated client package for profile API consumers.
     instruction_sources:
       - AGENTS.md
       - .trellis/workflow.md
@@ -21,8 +23,17 @@ repo_context:
     key_files:
       - src/contracts/
       - openapi.yaml
+    checks:
+      - npm run typecheck
+      - npm test
   consumer-repo:
-    branch: scenario/example-contract-change
+    path: ../profile-web
+    role: downstream-ui
+    description: Consumes generated contract clients in the product UI.
+    depends_on:
+      - repo: contract-repo
+        output: profile-client
+        reason: Uses the generated profile API client.
     instruction_sources:
       - AGENTS.md
       - CLAUDE.md
@@ -31,8 +42,17 @@ repo_context:
     key_files:
       - src/api/
       - src/generated/
+    checks:
+      - npm run typecheck
+      - npm test
   worker-repo:
-    branch: scenario/example-contract-change
+    path: ../notification-worker
+    role: async-consumer
+    description: Consumes contract payloads in async notification flows.
+    depends_on:
+      - repo: contract-repo
+        output: profile-client
+        reason: Uses contract payload types for notification events.
     instruction_sources:
       - AGENTS.md
       - README.md
@@ -40,3 +60,6 @@ repo_context:
     key_files:
       - workers/
       - events/
+    checks:
+      - npm run typecheck
+      - npm test

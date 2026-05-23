@@ -1,36 +1,19 @@
-# Example Contract Change Scenario
+# Scenario README Template
 
-## Purpose
+This file records the scenario-specific SOP that does not belong in `scenario.yaml`.
 
-Use this scenario when a shared contract, schema, generated client, or source-of-truth domain model changes and downstream repositories must be synchronized.
+## Scope
 
-## Repository Roles
+Describe when agents should use this scenario, what kind of work it covers, and what similar work is explicitly out of scope.
 
-- `contract-repo` is the source of truth for the shared contract.
-- `consumer-repo` consumes the contract through API calls, generated clients, or shared types.
-- `worker-repo` consumes related events, jobs, or background workflow payloads.
+## Cross-Repo Relationship
 
-## Required Order
+Describe why the repositories must be changed together, which repository provides the source of truth, and how downstream repositories consume or depend on it.
 
-1. Update `contract-repo` contract and domain model.
-2. Run `contract-repo` checks.
-3. Generate or export downstream artifacts if the repo-local instructions require it.
-4. Update `consumer-repo` usage.
-5. Run `consumer-repo` checks.
-6. Update `worker-repo` event or job handling.
-7. Run `worker-repo` checks.
+## Scenario-Specific Rules
 
-## Cross-Repo Invariants
-
-- Contract version and generated artifacts must match.
-- Shared identifiers, event names, endpoint names, and payload fields must stay consistent across repositories.
-- Breaking changes require explicit migration notes in the task decisions.
-- Generated files must not be edited manually unless repo-local instructions allow it.
+Describe the invariants, compatibility requirements, migration concerns, generated-artifact rules, or delivery constraints that agents must preserve while executing this scenario.
 
 ## Completion Criteria
 
-- All affected repo git states are inspected and recorded.
-- Each affected repo is on the branch specified by `scenario.yaml`.
-- Repo-local instruction sources were read or missing files were documented.
-- Repo-defined checks passed or failures are documented with next steps.
-- Delivery order and dependencies are recorded in the task status or decisions.
+Describe how agents know the scenario task is complete, including the evidence that must be recorded in task files and any required validation or documented skip reason.

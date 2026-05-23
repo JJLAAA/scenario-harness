@@ -58,19 +58,18 @@ Scenario Harness 不与 Spec Kit、OpenSpec、Trellis 或 repo 自定义 agent w
 1. `AGENTS.md`
 2. `scenarios/<scenario>/scenario.yaml`
 3. `scenarios/<scenario>/README.md`
-4. `repos.yaml`，只作为场景已选 repo key 的元数据查询表
 
 其中：
 
 - `AGENTS.md` 定义执行协议、YAML 字段语义、路径解析、执行顺序和冲突处理
-- `scenarios/<scenario>/scenario.yaml` 定义该场景的机器可读执行配置
+- `scenarios/<scenario>/scenario.yaml` 定义该场景的机器可读执行模板，包括 repo 路径、角色、instruction sources、key files 和 checks
 - `scenarios/<scenario>/README.md` 定义具体业务场景的 SOP
-- `repos.yaml` 定义稳定的仓库元数据和 repo-local 执行约定；它是字典，不是每个场景都要执行的 repo 列表
+- `tasks/<task>/` 记录本次具体请求、期望分支、执行进度、决策和验证结果
 
 在一个 scenario 目录内，两个文件职责不同：
 
-- `scenario.yaml` 是权威执行配置：选择哪些 repo、执行顺序、repo-local instruction sources 和 key files。
-- 它也通过 `repo_context.<repo>.branch` 声明每个 repo 期望处于的精确分支名；如果当前分支不匹配，agent 必须停止并反馈。
+- `scenario.yaml` 是权威场景模板：选择哪些 repo、执行顺序、repo 路径、repo-local instruction sources、key files 和 checks。
+- task 文件声明本次具体请求和每个 repo 的期望任务分支；preflight 发现当前分支不匹配时，agent 必须停止并反馈。
 - `README.md` 是场景 SOP：业务意图、设计理由、跨 repo invariants、兼容性要求、完成标准、风险，以及不适合写进 YAML 的判断规则。
 
 README 不应该重复或覆盖 `scenario.yaml` 中的结构化执行字段。如果二者在执行结构上冲突，除非会造成破坏性或不安全行为，否则以 `scenario.yaml` 为准。如果二者在业务意图、兼容性要求或完成标准上冲突，先停止并报告冲突，不要直接编辑业务 repo。
@@ -82,7 +81,6 @@ scenario-harness/
   AGENTS.md
   README.md
   README.zh.md
-  repos.yaml
   scenarios/
     example-contract-change/
       scenario.yaml
@@ -112,38 +110,7 @@ scenario-harness/
 
 默认假设 harness 是 standalone；不需要再声明 placement 字段。
 
-### 2. 配置真实仓库
-
-编辑 `repos.yaml`，把占位仓库替换成你的真实 repo。
-
-示例：
-
-```yaml
-repos:
-  api:
-    path: ../api
-    role: contract-source
-    description: Owns API schema and domain contracts.
-    default_branch: main
-    branch_prefix: scenario
-    checks:
-      - npm run lint
-      - npm test
-
-  web:
-    path: ../web
-    role: downstream-consumer
-    description: Consumes API contracts from api.
-    default_branch: main
-    branch_prefix: scenario
-    checks:
-      - pnpm typecheck
-      - pnpm test
-```
-
-字段解释以 `AGENTS.md` 为准。
-
-### 3. 定义业务场景
+### 2. 定义业务场景
 
 为每个场景创建目录，并在其中维护 `scenario.yaml` 和 `README.md`。
 
@@ -152,19 +119,16 @@ repos:
 ```yaml
 description: Update billing API contract and downstream consumers.
 
-repos:
-  - api
-  - web
-  - worker
-
 order:
   - api
   - web
   - worker
 
-repo_context:
+repos:
   api:
-    branch: scenario/billing-contract-change
+    path: ../api
+    role: contract-source
+    description: Owns API schema and domain contracts.
     instruction_sources:
       - AGENTS.md
       - CONTRIBUTING.md
@@ -172,13 +136,21 @@ repo_context:
     key_files:
       - openapi.yaml
       - src/contracts/
+    checks:
+      - npm run lint
+      - npm test
   web:
-    branch: scenario/billing-contract-change
+    path: ../web
+    role: downstream-consumer
+    description: Consumes API contracts from api.
     instruction_sources:
       - AGENTS.md
       - README.md
     key_files:
       - src/api/
+    checks:
+      - pnpm typecheck
+      - pnpm test
 ```
 
 放置位置：
@@ -205,8 +177,7 @@ bin/scenario-harness validate-scenario billing-contract-change
 bin/scenario-harness validate-scenario billing-contract-change --json
 ```
 
-这个命令会只读检查 scenario 文件是否存在、选中的 repo key 是否存在于 `repos.yaml`、
-`repos` 和 `order` 是否一致、branch gate 是否声明、仓库路径是否可解析。它不会修改业务仓库；
+这个命令会只读检查 scenario 文件是否存在、`repos` 和 `order` 是否一致、checks 形状是否合法、仓库路径是否可解析。它不会修改业务仓库；
 当 scenario 不适合执行时会以非零状态码退出。
 
 需要压缩执行上下文时，使用：
@@ -215,7 +186,7 @@ bin/scenario-harness validate-scenario billing-contract-change --json
 bin/scenario-harness plan-scenario billing-contract-change
 ```
 
-它会打印 scenario 顺序、解析后的 repo 路径、期望分支、instruction sources、key files 和 repo-local checks。
+它会打印 scenario 顺序、解析后的 repo 路径、instruction sources、key files 和 repo-local checks。
 如果 Agent 需要结构化携带这份计划，使用 `--json`。
 
 ### 1. 创建或选择任务目录
@@ -231,6 +202,10 @@ bin/scenario-harness init-task billing-contract-change \
 如果省略 task id，helper 会使用 `YYYY-MM-DD-<scenario>`。它会根据 scenario 配置生成
 `spec.md`、`status.md`、`decisions.md` 和 `validation.md`，并且不会覆盖已有 task 文件。
 需要结构化输出时使用 `--json`。
+
+期望分支是 task-specific 的。默认情况下，`init-task` 会为每个 repo 记录
+`scenario/<task-id>` 作为期望分支。使用 `--branch <branch>` 可以指定共享分支名；
+如果各 repo 分支不同，可以重复传入 `--repo-branch <repo>=<branch>`。
 
 继续已有任务时，agent 应先读取这些 task 文件，再编辑业务 repo：
 
@@ -289,10 +264,10 @@ bin/scenario-harness checks billing-contract-change \
 任务目录是 tasks/2026-05-20-billing-contract-change。
 
 先阅读 AGENTS.md、scenarios/billing-contract-change/scenario.yaml
-和 scenarios/billing-contract-change/README.md，然后只读取 repos.yaml 中被该 scenario 选中的 repo 条目。
+和 scenarios/billing-contract-change/README.md。
 
 然后解析 repo 路径，检查 affected repos 的 git status，按 scenario order 进入各 repo，
-检查每个 repo 当前分支是否等于 scenario.yaml 指定分支，读取 scenario 定义的 repo-local instruction sources，
+检查每个 repo 当前分支是否等于 task 指定分支，读取 scenario 定义的 repo-local instruction sources，
 检查 key files，实施修改，运行 checks，并更新 task status、validation report 和 decisions。
 除非我明确要求，不要 commit。
 ```
@@ -311,7 +286,7 @@ bin/scenario-harness checks billing-contract-change \
 
 默认执行模型是单个 agent 串行执行 scenario。MVP 工作流中不引入多 agent 调度。
 
-scenario 应该足够收敛，让 agent 可以依靠已配置的 repos、`repo_context`、checks 和 scenario invariants 推进，而不需要在每个 repo 中做大范围探索。必要知识应写进 `repos.yaml`、scenario 目录和 task files，而不是依赖 agent 自行推断跨 repo 行为。
+scenario 应该足够收敛，让 agent 可以依靠已配置的 repos、checks 和 scenario invariants 推进，而不需要在每个 repo 中做大范围探索。必要知识应写进 `scenario.yaml`、scenario README 和 task files，而不是依赖 agent 自行推断跨 repo 行为。
 
 为了控制上下文压力，agent 在完成每个 repo 后应总结：
 
@@ -334,8 +309,8 @@ agent 应该：
 6. 用 `bin/scenario-harness init-task` 或 `bin/scenario-harness list-tasks` 创建或选择 task 文件
 7. 进入业务 repo 前运行 `bin/scenario-harness preflight <scenario> --task <task-id>`
 8. 按 `scenarios.<name>.order` 执行
-9. 进入每个 repo 后读取 scenario 定义的 `repo_context.<repo>.instruction_sources`
-10. 检查 scenario 定义的 `repo_context.<repo>.key_files`
+9. 进入每个 repo 后读取 scenario 定义的 `repos.<repo>.instruction_sources`
+10. 检查 scenario 定义的 `repos.<repo>.key_files`
 11. 实施 repo-local 修改
 12. 运行每个 affected repo 的 repo-local `checks`，优先使用 `bin/scenario-harness checks <scenario> --run --task <task-id>`
 13. 更新 `tasks/<task-id>/` 下的任务文件
@@ -369,7 +344,7 @@ agent 不应该：
 任务完成前确认：
 
 - 已检查每个 affected repo 的 git status
-- 已确认每个 affected repo 当前分支匹配 scenario 指定分支
+- 已确认每个 affected repo 当前分支匹配 task 指定分支
 - 已读取 repo-local instructions，或记录缺失文件
 - source-of-truth repo 先于 downstream repo 修改
 - 生成文件按 repo-local 规则更新
@@ -382,8 +357,8 @@ agent 不应该：
 
 首次真实使用时，用 helper CLI 跑一个小任务，但不要 commit：
 
-1. 替换 `repos.yaml` 中的占位 repo
-2. 用一个真实场景替换 `example-contract-change`
+1. 用一个真实场景替换 `example-contract-change`
+2. 在 `scenarios/<scenario>/scenario.yaml` 中直接声明该场景的真实 repo
 3. 运行 `bin/scenario-harness validate-scenario <scenario>`
 4. 运行 `bin/scenario-harness plan-scenario <scenario> --json`，确认 selected repos 和 order
 5. 运行 `bin/scenario-harness init-task <scenario> <task-id> --request "..."`
@@ -471,7 +446,7 @@ delivery:
     production_requires_approval: true
 ```
 
-只有当部署命令确实是 scenario-specific 时，才把 repo-specific deployment commands 写进 `repo_context`。
+只有当部署命令确实是 scenario-specific 时，才把 repo-specific deployment commands 写进 `repos.<repo>`。
 稳定的 repo-owned 部署规则应继续留在业务 repo 或 CI/CD 平台中。
 
 ## 当前状态

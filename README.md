@@ -58,14 +58,13 @@ Required reading order:
 1. `AGENTS.md`
 2. `scenarios/<scenario>/scenario.yaml`
 3. `scenarios/<scenario>/README.md`
-4. `repos.yaml`, as a registry for only the repository keys selected by the scenario
 
-`AGENTS.md` defines the execution protocol and YAML semantics. Each scenario directory contains its own machine-readable execution config and human-readable SOP. `repos.yaml` defines stable repository metadata and should be treated as a lookup table, not as the list of affected repositories for every scenario.
+`AGENTS.md` defines the execution protocol and YAML semantics. Each scenario directory contains its own machine-readable execution template and human-readable SOP. Repository paths, roles, instruction sources, key files, and checks live inside the scenario so agents do not need a separate registry lookup. Task-specific data, such as expected branches and the concrete user request, lives under `tasks/`.
 
 Within a scenario directory, the files have different jobs:
 
-- `scenario.yaml` is the authoritative execution config: selected repos, execution order, repo-local instruction sources, and key files.
-- It also declares the exact branch expected for each repo through `repo_context.<repo>.branch`; agents stop and report if a repo is on any other branch.
+- `scenario.yaml` is the authoritative scenario template: selected repos, execution order, repository paths, repo-local instruction sources, key files, and checks.
+- Task files declare the concrete request and expected task branches; agents stop and report if a repo is on a different branch during preflight.
 - `README.md` is the scenario SOP: business intent, rationale, invariants, compatibility guidance, completion criteria, risks, and judgment calls that do not fit cleanly in YAML.
 
 The README should not duplicate or override structural fields from `scenario.yaml`. If the two conflict on execution structure, follow `scenario.yaml` unless doing so would be destructive or unsafe. If they conflict on business intent, compatibility, or completion criteria, stop and report the conflict before editing repositories.
@@ -76,7 +75,6 @@ The README should not duplicate or override structural fields from `scenario.yam
 scenario-harness/
   AGENTS.md
   README.md
-  repos.yaml
   scenarios/
     example-contract-change/
       scenario.yaml
@@ -106,57 +104,23 @@ Keep this harness separate from all business repos:
 
 The harness is assumed to be standalone; no placement field is required.
 
-### 2. Configure Repositories
-
-Edit `repos.yaml` and replace the placeholder repos with real repositories.
-
-Example configuration:
-
-```yaml
-repos:
-  api:
-    path: ../api
-    role: contract-source
-    description: Owns API schema and domain contracts.
-    default_branch: main
-    branch_prefix: scenario
-    checks:
-      - npm run lint
-      - npm test
-
-  web:
-    path: ../web
-    role: downstream-consumer
-    description: Consumes API contracts from api.
-    default_branch: main
-    branch_prefix: scenario
-    checks:
-      - pnpm typecheck
-      - pnpm test
-```
-
-Read `AGENTS.md` for the complete field semantics.
-
-### 3. Define Scenarios
+### 2. Define Scenarios
 
 Create a scenario directory with `scenario.yaml` and `README.md`.
 
 ```yaml
 description: Update billing API contract and downstream consumers.
 
-repos:
-  - api
-  - web
-  - worker
-
 order:
   - api
   - web
   - worker
 
-repo_context:
+repos:
   api:
-    branch: scenario/billing-contract-change
+    path: ../api
+    role: contract-source
+    description: Owns API schema and domain contracts.
     instruction_sources:
       - AGENTS.md
       - CONTRIBUTING.md
@@ -164,13 +128,21 @@ repo_context:
     key_files:
       - openapi.yaml
       - src/contracts/
+    checks:
+      - npm run lint
+      - npm test
   web:
-    branch: scenario/billing-contract-change
+    path: ../web
+    role: downstream-consumer
+    description: Consumes API contracts from api.
     instruction_sources:
       - AGENTS.md
       - README.md
     key_files:
       - src/api/
+    checks:
+      - pnpm typecheck
+      - pnpm test
 ```
 
 Place it at:
@@ -197,8 +169,8 @@ Use JSON when the agent needs a structured contract:
 bin/scenario-harness validate-scenario billing-contract-change --json
 ```
 
-The command checks that the scenario files exist, selected repo keys are present in `repos.yaml`,
-`repos` and `order` agree, branch gates are declared, and repository paths resolve. It is read-only
+The command checks that the scenario files exist, `repos` and `order` agree,
+checks have valid shapes, and repository paths resolve. It is read-only
 and exits non-zero when the scenario is not safe to execute.
 
 For a compact execution summary, use:
@@ -207,7 +179,7 @@ For a compact execution summary, use:
 bin/scenario-harness plan-scenario billing-contract-change
 ```
 
-This prints the scenario order, resolved repo paths, expected branches, instruction sources, key
+This prints the scenario order, resolved repo paths, instruction sources, key
 files, and repo-local checks. Use `--json` when the agent needs to carry the plan forward in a
 structured form.
 
@@ -224,6 +196,10 @@ bin/scenario-harness init-task billing-contract-change \
 If the task id is omitted, the helper uses `YYYY-MM-DD-<scenario>`. It creates `spec.md`,
 `status.md`, `decisions.md`, and `validation.md` from the scenario configuration and does not
 overwrite existing task files. Pass `--json` for structured output.
+
+Expected branches are task-specific. By default, `init-task` records `scenario/<task-id>` as the
+expected branch for every repo. Use `--branch <branch>` for a shared branch name, or repeat
+`--repo-branch <repo>=<branch>` when repositories need different task branches.
 
 When resuming, the agent should read the existing task files before editing repositories:
 
@@ -249,7 +225,7 @@ bin/scenario-harness preflight billing-contract-change \
   --task 2026-05-20-billing-contract-change
 ```
 
-Preflight checks each affected repository's current branch, dirty state, missing instruction sources,
+Preflight checks each affected repository's current branch against the task's expected branch, dirty state, missing instruction sources,
 and missing key files. It updates marked sections in `status.md` and `validation.md`, so repeated
 runs replace the previous preflight block instead of duplicating notes. Use `--no-write --json`
 when the agent needs a read-only structured preview.
@@ -283,10 +259,10 @@ Execute scenario billing-contract-change.
 Task directory: tasks/2026-05-20-billing-contract-change.
 
 Read AGENTS.md, scenarios/billing-contract-change/scenario.yaml,
-scenarios/billing-contract-change/README.md, then the selected repo entries in repos.yaml.
+and scenarios/billing-contract-change/README.md.
 
 Then resolve repo paths, inspect git status for affected repos, enter repos in scenario order,
-verify each repo is on the branch specified by scenario.yaml, read scenario-defined repo-local instruction sources,
+verify each repo is on the branch specified by the task, read scenario-defined repo-local instruction sources,
 inspect key files, implement the requested change, run checks, and update the task status, validation report, and decisions.
 Do not commit unless I explicitly ask.
 ```
@@ -305,7 +281,7 @@ Do not commit unless I explicitly ask.
 
 The default execution model is a single agent running the scenario serially. Do not introduce multi-agent scheduling in the MVP workflow.
 
-The scenario should be narrow enough that the agent can follow configured repos, `repo_context`, checks, and scenario invariants without broad discovery across every repository. Put the required knowledge in `repos.yaml`, scenario directories, and task files instead of relying on the agent to infer cross-repo behavior.
+The scenario should be narrow enough that the agent can follow configured repos, checks, and scenario invariants without broad discovery across every repository. Put the required knowledge in `scenario.yaml`, the scenario README, and task files instead of relying on the agent to infer cross-repo behavior.
 
 To control context pressure, the agent should summarize after each repository:
 
@@ -328,8 +304,8 @@ The agent should:
 6. Create or select task files with `bin/scenario-harness init-task` or `bin/scenario-harness list-tasks`.
 7. Run `bin/scenario-harness preflight <scenario> --task <task-id>` before entering business repos.
 8. Follow `scenarios.<name>.order`.
-9. For each repo, read scenario-defined `repo_context.<repo>.instruction_sources`.
-10. Inspect scenario-defined `repo_context.<repo>.key_files`.
+9. For each repo, read scenario-defined `repos.<repo>.instruction_sources`.
+10. Inspect scenario-defined `repos.<repo>.key_files`.
 11. Implement repo-local changes.
 12. Run each affected repository's repo-local `checks`, preferably through `bin/scenario-harness checks <scenario> --run --task <task-id>`.
 13. Update task files under `tasks/<task-id>/`.
@@ -363,7 +339,7 @@ These files are the recovery point if the session is interrupted.
 Before considering a task complete, verify:
 
 - every affected repo's git status was inspected
-- every affected repo's current branch matched the scenario-defined branch
+- every affected repo's current branch matched the task-defined branch
 - repo-local instructions were read or missing files were recorded
 - source-of-truth repos were changed before downstream repos
 - generated artifacts were updated according to repo-local rules
@@ -376,8 +352,8 @@ Before considering a task complete, verify:
 
 For the first real use, run a small task through the helper CLI without committing:
 
-1. Replace placeholder repos in `repos.yaml`.
-2. Replace `example-contract-change` with one real scenario.
+1. Replace `example-contract-change` with one real scenario.
+2. Declare the real scenario's repositories directly under `scenarios/<scenario>/scenario.yaml`.
 3. Run `bin/scenario-harness validate-scenario <scenario>`.
 4. Run `bin/scenario-harness plan-scenario <scenario> --json` and confirm the selected repos and order.
 5. Run `bin/scenario-harness init-task <scenario> <task-id> --request "..."`.
@@ -467,7 +443,7 @@ delivery:
     production_requires_approval: true
 ```
 
-Repo-specific deployment commands should live under `repo_context` only when they are truly
+Repo-specific deployment commands should live under `repos.<repo>` only when they are truly
 scenario-specific. Stable repo-owned deployment rules should remain in the repo or its CI/CD
 platform.
 

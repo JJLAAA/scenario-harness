@@ -33,7 +33,7 @@ If editing manually, replace this list with scenario.yaml order.
 
 | Step | Repo | Action | Status |
 | --- | --- | --- | --- |
-| 1 | repo-key-from-scenario-order | Inspect status, verify branch, read instructions, and inspect key files | pending |
+| 1 | repo-key-from-scenario-order | Inspect status, verify task branch, read instructions, and inspect key files | pending |
 | 2 | repo-key-from-scenario-order | Implement repo-local change | pending |
 | 3 | repo-key-from-scenario-order | Run repo-local checks | pending |
 | 4 | all | Update validation and task status | pending |

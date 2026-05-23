@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -92,7 +93,25 @@ def parse_yaml_subset(text: str) -> Any:
         if stripped.startswith("- "):
             if not isinstance(parent, list):
                 raise HarnessError(f"YAML list item has no list parent near: {stripped}")
-            parent.append(parse_scalar(stripped[2:]))
+            item = stripped[2:].strip()
+            item_key = item.split(":", 1)[0].strip() if ":" in item else ""
+            if ":" in item and re.match(r"^[A-Za-z_][A-Za-z0-9_-]*$", item_key):
+                key, raw_value = item.split(":", 1)
+                key = key.strip()
+                raw_value = raw_value.strip()
+                if not key:
+                    raise HarnessError(f"YAML list mapping key is empty near: {stripped}")
+                mapping: dict[str, Any] = {}
+                if raw_value:
+                    mapping[key] = parse_scalar(raw_value)
+                else:
+                    raise HarnessError(
+                        f"YAML list mapping values must be scalar near: {stripped}"
+                    )
+                parent.append(mapping)
+                stack.append((indent, mapping))
+                continue
+            parent.append(parse_scalar(item))
             continue
 
         if ":" not in stripped:
@@ -161,22 +180,255 @@ def load_scenario(root: Path, scenario: str) -> tuple[Path, dict[str, Any]]:
     return scenario_dir, data
 
 
-def load_repos(root: Path) -> dict[str, Any]:
-    data = load_yaml(root / "repos.yaml")
-    repos = data.get("repos") if isinstance(data, dict) else None
-    if not isinstance(repos, dict):
-        raise HarnessError("repos.yaml must contain a top-level 'repos' mapping.")
-    return repos
+def scenario_repos(scenario_data: dict[str, Any]) -> dict[str, Any]:
+    repos = scenario_data.get("repos")
+    if isinstance(repos, dict):
+        return repos
+    return {}
 
 
 def selected_repo_keys(scenario_data: dict[str, Any]) -> tuple[list[str], list[str]]:
-    repos = scenario_data.get("repos")
+    repos = scenario_repos(scenario_data)
     order = scenario_data.get("order")
-    if not isinstance(repos, list) or not all(isinstance(item, str) for item in repos):
-        repos = []
     if not isinstance(order, list) or not all(isinstance(item, str) for item in order):
         order = []
-    return list(repos), list(order)
+    return list(repos.keys()), list(order)
+
+
+TASK_SPECIFIC_DEPENDENCY_FIELDS = {
+    "branch",
+    "commit",
+    "dist-tag",
+    "dist_tag",
+    "file",
+    "link",
+    "ref",
+    "sha",
+    "tag",
+    "tarball",
+    "version",
+    "workspace",
+}
+
+
+def non_empty_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def dependency_field_path(repo_key: str, field: str, index: int, key: str | None = None) -> str:
+    path = f"repos.{repo_key}.{field}[{index}]"
+    if key:
+        path += f".{key}"
+    return path
+
+
+def validate_task_specific_fields(
+    repo_key: str,
+    field: str,
+    index: int,
+    item: dict[str, Any],
+    findings: list[Finding],
+) -> None:
+    for key in sorted(set(item) & TASK_SPECIFIC_DEPENDENCY_FIELDS):
+        findings.append(
+            Finding(
+                "error",
+                "task_specific_dependency_field",
+                f"{dependency_field_path(repo_key, field, index, key)} is task-specific and must not be declared in scenario.yaml.",
+                "Ask a human to confirm this value for the task, then record it in the task files.",
+            )
+        )
+
+
+def validate_dependency_metadata(
+    repos_config: dict[str, Any],
+    order: list[str],
+    findings: list[Finding],
+) -> None:
+    outputs_by_repo: dict[str, set[str]] = {}
+
+    for repo_key, repo_entry in repos_config.items():
+        if not isinstance(repo_entry, dict):
+            continue
+
+        outputs = repo_entry.get("outputs")
+        if outputs is None:
+            continue
+        if not isinstance(outputs, list):
+            findings.append(
+                Finding(
+                    "error",
+                    "invalid_outputs",
+                    f"repos.{repo_key}.outputs must be a list of output mappings when present.",
+                    "Use list items with id, type, and name fields.",
+                )
+            )
+            continue
+
+        seen: set[str] = set()
+        for index, output in enumerate(outputs):
+            if not isinstance(output, dict):
+                findings.append(
+                    Finding(
+                        "error",
+                        "invalid_output",
+                        f"{dependency_field_path(repo_key, 'outputs', index)} must be a mapping.",
+                        "Use a mapping such as '- id: profile-client'.",
+                    )
+                )
+                continue
+
+            validate_task_specific_fields(repo_key, "outputs", index, output, findings)
+            for key in ("id", "type", "name"):
+                if not non_empty_string(output.get(key)):
+                    findings.append(
+                        Finding(
+                            "error",
+                            "invalid_output",
+                            f"{dependency_field_path(repo_key, 'outputs', index, key)} must be a non-empty string.",
+                            f"Set {dependency_field_path(repo_key, 'outputs', index, key)}.",
+                        )
+                    )
+
+            output_id = output.get("id")
+            if not non_empty_string(output_id):
+                continue
+            if output_id in seen:
+                findings.append(
+                    Finding(
+                        "error",
+                        "duplicate_output",
+                        f"repos.{repo_key}.outputs contains duplicate id '{output_id}'.",
+                        "Use a unique stable output id within each repo.",
+                    )
+                )
+                continue
+            seen.add(output_id)
+            outputs_by_repo.setdefault(repo_key, set()).add(output_id)
+
+    order_positions = {repo_key: index for index, repo_key in enumerate(order)}
+    for repo_key, repo_entry in repos_config.items():
+        if not isinstance(repo_entry, dict):
+            continue
+
+        dependencies = repo_entry.get("depends_on")
+        if dependencies is None:
+            continue
+        if not isinstance(dependencies, list):
+            findings.append(
+                Finding(
+                    "error",
+                    "invalid_depends_on",
+                    f"repos.{repo_key}.depends_on must be a list of dependency mappings when present.",
+                    "Use list items with repo, output, and optional reason fields.",
+                )
+            )
+            continue
+
+        seen_dependencies: set[tuple[str, str]] = set()
+        for index, dependency in enumerate(dependencies):
+            if not isinstance(dependency, dict):
+                findings.append(
+                    Finding(
+                        "error",
+                        "invalid_dependency",
+                        f"{dependency_field_path(repo_key, 'depends_on', index)} must be a mapping.",
+                        "Use a mapping such as '- repo: contract-repo'.",
+                    )
+                )
+                continue
+
+            validate_task_specific_fields(repo_key, "depends_on", index, dependency, findings)
+
+            producer = dependency.get("repo")
+            output_id = dependency.get("output")
+            if not non_empty_string(producer):
+                findings.append(
+                    Finding(
+                        "error",
+                        "invalid_dependency",
+                        f"{dependency_field_path(repo_key, 'depends_on', index, 'repo')} must be a non-empty string.",
+                        f"Set {dependency_field_path(repo_key, 'depends_on', index, 'repo')} to an upstream repo key.",
+                    )
+                )
+            if not non_empty_string(output_id):
+                findings.append(
+                    Finding(
+                        "error",
+                        "invalid_dependency",
+                        f"{dependency_field_path(repo_key, 'depends_on', index, 'output')} must be a non-empty string.",
+                        f"Set {dependency_field_path(repo_key, 'depends_on', index, 'output')} to an upstream output id.",
+                    )
+                )
+            reason = dependency.get("reason")
+            if reason is not None and not isinstance(reason, str):
+                findings.append(
+                    Finding(
+                        "error",
+                        "invalid_dependency",
+                        f"{dependency_field_path(repo_key, 'depends_on', index, 'reason')} must be a string when present.",
+                        "Use a short human-readable reason or remove the field.",
+                    )
+                )
+
+            if not non_empty_string(producer) or not non_empty_string(output_id):
+                continue
+
+            dependency_key = (producer, output_id)
+            if dependency_key in seen_dependencies:
+                findings.append(
+                    Finding(
+                        "error",
+                        "duplicate_dependency",
+                        f"repos.{repo_key}.depends_on contains duplicate dependency on '{producer}' output '{output_id}'.",
+                        "Declare each producer/output dependency once per consumer repo.",
+                    )
+                )
+            seen_dependencies.add(dependency_key)
+
+            if producer == repo_key:
+                findings.append(
+                    Finding(
+                        "error",
+                        "self_dependency",
+                        f"repos.{repo_key}.depends_on[{index}] references the same repo.",
+                        "Remove self-dependencies; repo-local relationships belong in repo-local documentation.",
+                    )
+                )
+                continue
+
+            if producer not in repos_config:
+                findings.append(
+                    Finding(
+                        "error",
+                        "unknown_dependency_repo",
+                        f"repos.{repo_key}.depends_on[{index}].repo references unknown repo '{producer}'.",
+                        "Reference a repo key declared under scenario.yaml repos.",
+                    )
+                )
+                continue
+
+            producer_outputs = outputs_by_repo.get(producer, set())
+            if output_id not in producer_outputs:
+                findings.append(
+                    Finding(
+                        "error",
+                        "unknown_dependency_output",
+                        f"repos.{repo_key}.depends_on[{index}].output references unknown output '{output_id}' from '{producer}'.",
+                        f"Declare repos.{producer}.outputs with id '{output_id}', or update the dependency.",
+                    )
+                )
+
+            if producer in order_positions and repo_key in order_positions:
+                if order_positions[producer] >= order_positions[repo_key]:
+                    findings.append(
+                        Finding(
+                            "error",
+                            "dependency_order",
+                            f"Repo '{repo_key}' depends on output '{output_id}' from '{producer}', but '{producer}' does not appear before '{repo_key}' in order.",
+                            "Move producer repos before consumer repos in scenario.yaml order.",
+                        )
+                    )
 
 
 def validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
@@ -193,9 +445,8 @@ def validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
         )
 
     scenario_dir, scenario_data = load_scenario(root, scenario)
-    repos_registry = load_repos(root)
     repos, order = selected_repo_keys(scenario_data)
-    repo_context = scenario_data.get("repo_context")
+    repos_config = scenario_repos(scenario_data)
 
     if not readme_file.exists():
         findings.append(
@@ -222,8 +473,8 @@ def validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
             Finding(
                 "error",
                 "invalid_repos",
-                "scenario.yaml must include a non-empty 'repos' list of repo keys.",
-                "Add repo keys that exist in repos.yaml.",
+                "scenario.yaml must include a non-empty 'repos' mapping.",
+                "Add repos.<repo-key> entries with path, instructions, key files, and checks.",
             )
         )
 
@@ -255,36 +506,26 @@ def validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
             )
         )
 
-    if not isinstance(repo_context, dict):
-        findings.append(
-            Finding(
-                "error",
-                "invalid_repo_context",
-                "scenario.yaml must include a 'repo_context' mapping.",
-                "Add repo_context entries for every selected repo.",
-            )
-        )
-        repo_context = {}
+    validate_dependency_metadata(repos_config, order, findings)
 
     selected = order or repos
     repo_reports: list[dict[str, Any]] = []
     for repo_key in selected:
         repo_report: dict[str, Any] = {"key": repo_key}
-        registry_entry = repos_registry.get(repo_key)
-        context_entry = repo_context.get(repo_key) if isinstance(repo_context, dict) else None
+        repo_entry = repos_config.get(repo_key)
 
-        if not isinstance(registry_entry, dict):
+        if not isinstance(repo_entry, dict):
             findings.append(
                 Finding(
                     "error",
                     "unknown_repo",
-                    f"Scenario references repo '{repo_key}' but repos.yaml has no matching entry.",
-                    f"Add repos.{repo_key} to repos.yaml or remove it from the scenario.",
+                    f"Scenario order references repo '{repo_key}' but repos has no matching entry.",
+                    f"Add repos.{repo_key} to scenario.yaml or remove it from order.",
                 )
             )
-            repo_report["registry"] = "missing"
+            repo_report["config"] = "missing"
         else:
-            raw_path = registry_entry.get("path")
+            raw_path = repo_entry.get("path")
             if not isinstance(raw_path, str) or not raw_path:
                 findings.append(
                     Finding(
@@ -304,7 +545,7 @@ def validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
                                 "error",
                                 "repo_path_missing",
                                 f"Repo path does not exist for '{repo_key}': {resolved_path}",
-                                "Clone or move the repository, or update repos.yaml.",
+                                "Clone or move the repository, or update scenario.yaml.",
                             )
                         )
                     elif not (resolved_path / ".git").exists():
@@ -326,7 +567,7 @@ def validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
                         )
                     )
 
-            checks = registry_entry.get("checks")
+            checks = repo_entry.get("checks")
             if checks is not None and (
                 not isinstance(checks, list) or not all(isinstance(item, str) for item in checks)
             ):
@@ -339,30 +580,8 @@ def validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
                     )
                 )
 
-        if not isinstance(context_entry, dict):
-            findings.append(
-                Finding(
-                    "error",
-                    "missing_repo_context",
-                    f"repo_context.{repo_key} is required.",
-                    f"Add branch, instruction_sources, and key_files for {repo_key}.",
-                )
-            )
-        else:
-            branch = context_entry.get("branch")
-            if not isinstance(branch, str) or not branch:
-                findings.append(
-                    Finding(
-                        "error",
-                        "missing_branch_gate",
-                        f"repo_context.{repo_key}.branch must be a non-empty string.",
-                        "Set the exact branch the agent must find before editing.",
-                    )
-                )
-            repo_report["expected_branch"] = branch
-
             for field in ("instruction_sources", "key_files"):
-                value = context_entry.get(field)
+                value = repo_entry.get(field)
                 if value is not None and (
                     not isinstance(value, list) or not all(isinstance(item, str) for item in value)
                 ):
@@ -370,8 +589,8 @@ def validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
                         Finding(
                             "error",
                             f"invalid_{field}",
-                            f"repo_context.{repo_key}.{field} must be a list of strings when present.",
-                            f"Use YAML list items under repo_context.{repo_key}.{field}.",
+                            f"repos.{repo_key}.{field} must be a list of strings when present.",
+                            f"Use YAML list items under repos.{repo_key}.{field}.",
                         )
                     )
 
@@ -390,22 +609,16 @@ def validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
 
 def scenario_context(root: Path, scenario: str) -> dict[str, Any]:
     scenario_dir, scenario_data = load_scenario(root, scenario)
-    repos_registry = load_repos(root)
     repos, order = selected_repo_keys(scenario_data)
-    repo_context = scenario_data.get("repo_context")
-    if not isinstance(repo_context, dict):
-        repo_context = {}
+    repos_config = scenario_repos(scenario_data)
 
     selected = order or repos
     entries: list[dict[str, Any]] = []
     for repo_key in selected:
-        registry_entry = repos_registry.get(repo_key)
-        context_entry = repo_context.get(repo_key)
-        if not isinstance(registry_entry, dict):
-            registry_entry = {}
-        if not isinstance(context_entry, dict):
-            context_entry = {}
-        raw_path = registry_entry.get("path")
+        repo_entry = repos_config.get(repo_key)
+        if not isinstance(repo_entry, dict):
+            repo_entry = {}
+        raw_path = repo_entry.get("path")
         resolved_path = None
         if isinstance(raw_path, str) and raw_path:
             resolved_path = str(resolve_harness_path(root, raw_path))
@@ -413,12 +626,13 @@ def scenario_context(root: Path, scenario: str) -> dict[str, Any]:
             {
                 "key": repo_key,
                 "path": resolved_path,
-                "role": registry_entry.get("role"),
-                "description": registry_entry.get("description"),
-                "expected_branch": context_entry.get("branch"),
-                "instruction_sources": context_entry.get("instruction_sources") or [],
-                "key_files": context_entry.get("key_files") or [],
-                "checks": registry_entry.get("checks") or [],
+                "role": repo_entry.get("role"),
+                "description": repo_entry.get("description"),
+                "outputs": repo_entry.get("outputs") or [],
+                "depends_on": repo_entry.get("depends_on") or [],
+                "instruction_sources": repo_entry.get("instruction_sources") or [],
+                "key_files": repo_entry.get("key_files") or [],
+                "checks": repo_entry.get("checks") or [],
             }
         )
 
@@ -436,6 +650,35 @@ def markdown_list(items: list[str], empty: str = "None.") -> str:
     return "\n".join(f"- `{item}`" for item in items)
 
 
+def markdown_outputs(outputs: list[Any]) -> str:
+    rows = []
+    for output in outputs:
+        if not isinstance(output, dict):
+            continue
+        label = output.get("id") or "TBD"
+        details = []
+        if output.get("type"):
+            details.append(f"type `{output['type']}`")
+        if output.get("name"):
+            details.append(f"name `{output['name']}`")
+        rows.append(f"- `{label}`" + (f" ({', '.join(details)})" if details else ""))
+    return "\n".join(rows) if rows else "None."
+
+
+def markdown_dependencies(dependencies: list[Any]) -> str:
+    rows = []
+    for dependency in dependencies:
+        if not isinstance(dependency, dict):
+            continue
+        producer = dependency.get("repo") or "TBD"
+        output = dependency.get("output") or "TBD"
+        reason = dependency.get("reason")
+        rows.append(
+            f"- `{producer}` output `{output}`" + (f": {reason}" if isinstance(reason, str) and reason else "")
+        )
+    return "\n".join(rows) if rows else "None."
+
+
 def run_git(repo_path: str, args: list[str]) -> tuple[int, str, str]:
     process = subprocess.run(
         ["git", "-C", repo_path, *args],
@@ -445,6 +688,55 @@ def run_git(repo_path: str, args: list[str]) -> tuple[int, str, str]:
         check=False,
     )
     return process.returncode, process.stdout.strip(), process.stderr.strip()
+
+
+def parse_branch_overrides(values: list[str] | None) -> dict[str, str]:
+    branches: dict[str, str] = {}
+    for value in values or []:
+        if "=" not in value:
+            raise HarnessError(
+                f"Invalid --repo-branch value '{value}'. Expected REPO=BRANCH.",
+                EXIT_USAGE,
+            )
+        repo_key, branch = value.split("=", 1)
+        repo_key = repo_key.strip()
+        branch = branch.strip()
+        if not repo_key or not branch:
+            raise HarnessError(
+                f"Invalid --repo-branch value '{value}'. Expected non-empty REPO=BRANCH.",
+                EXIT_USAGE,
+            )
+        branches[repo_key] = branch
+    return branches
+
+
+def task_branch_map(context: dict[str, Any], shared_branch: str, overrides: dict[str, str]) -> dict[str, str]:
+    repo_keys = {repo["key"] for repo in context["repos"]}
+    unknown = sorted(set(overrides) - repo_keys)
+    if unknown:
+        raise HarnessError(
+            f"Branch override references repo not in scenario: {', '.join(unknown)}",
+            EXIT_USAGE,
+        )
+    return {repo["key"]: overrides.get(repo["key"], shared_branch) for repo in context["repos"]}
+
+
+def read_task_branches(task_dir: Path) -> dict[str, str]:
+    status_file = task_dir / "status.md"
+    if not status_file.exists():
+        return {}
+    branches: dict[str, str] = {}
+    for line in status_file.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("|") or "---" in line or "Repo" in line:
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        repo_key = re.sub(r"^`|`$", "", cells[0])
+        expected_branch = re.sub(r"^`|`$", "", cells[2])
+        if repo_key and expected_branch and expected_branch not in {"-", "TBD"}:
+            branches[repo_key] = expected_branch
+    return branches
 
 
 def resolve_task_dir(root: Path, raw_task: str) -> Path:
@@ -470,16 +762,17 @@ def upsert_marked_block(path: Path, marker: str, content: str) -> None:
     path.write_text(existing + separator + "\n" + block, encoding="utf-8")
 
 
-def collect_preflight(root: Path, scenario: str) -> dict[str, Any]:
+def collect_preflight(root: Path, scenario: str, expected_branches: dict[str, str] | None = None) -> dict[str, Any]:
     validation = validate_scenario(root, scenario)
     context = scenario_context(root, scenario)
     findings: list[Finding] = []
     repo_results: list[dict[str, Any]] = []
+    expected_branches = expected_branches or {}
 
     for repo in context["repos"]:
         repo_key = repo["key"]
         repo_path = repo.get("path")
-        expected_branch = repo.get("expected_branch")
+        expected_branch = expected_branches.get(repo_key)
         result: dict[str, Any] = {
             "key": repo_key,
             "path": repo_path,
@@ -496,7 +789,7 @@ def collect_preflight(root: Path, scenario: str) -> dict[str, Any]:
         if not repo_path or not Path(repo_path).exists():
             message = f"Repo path is missing for '{repo_key}': {repo_path or 'TBD'}"
             result["errors"].append(message)
-            findings.append(Finding("error", "repo_path_missing", message, "Fix repos.yaml path before entry."))
+            findings.append(Finding("error", "repo_path_missing", message, "Fix scenario.yaml path before entry."))
             repo_results.append(result)
             continue
 
@@ -508,7 +801,9 @@ def collect_preflight(root: Path, scenario: str) -> dict[str, Any]:
             findings.append(Finding("error", "git_branch_failed", message, "Confirm the repo path is a git repository."))
         else:
             result["actual_branch"] = branch_stdout
-            if expected_branch and branch_stdout == expected_branch:
+            if not expected_branch:
+                result["branch_result"] = "not_configured"
+            elif branch_stdout == expected_branch:
                 result["branch_result"] = "pass"
             else:
                 result["branch_result"] = "fail"
@@ -516,7 +811,7 @@ def collect_preflight(root: Path, scenario: str) -> dict[str, Any]:
                     Finding(
                         "error",
                         "branch_mismatch",
-                        f"Repo '{repo_key}' is on '{branch_stdout}', expected '{expected_branch}'.",
+                        f"Repo '{repo_key}' is on '{branch_stdout}', expected task branch '{expected_branch}'.",
                         "Stop before reading repo-local context or editing; ask for direction.",
                     )
                 )
@@ -743,7 +1038,12 @@ Generated: `{dt.datetime.now().isoformat(timespec="seconds")}`
 """
 
 
-def render_task_files(context: dict[str, Any], task_id: str, request: str) -> dict[str, str]:
+def render_task_files(
+    context: dict[str, Any],
+    task_id: str,
+    request: str,
+    branches: dict[str, str],
+) -> dict[str, str]:
     repos = context["repos"]
     order_lines = "\n".join(f"{index}. `{repo['key']}`" for index, repo in enumerate(repos, 1))
     scope_lines = "\n".join(
@@ -756,7 +1056,7 @@ def render_task_files(context: dict[str, Any], task_id: str, request: str) -> di
     for repo in repos:
         repo_key = repo["key"]
         step_rows.append(
-            f"| {step_index} | {repo_key} | Inspect status, verify branch, read instructions, and inspect key files | pending |"
+            f"| {step_index} | {repo_key} | Inspect status, verify task branch, read instructions, and inspect key files | pending |"
         )
         step_index += 1
         step_rows.append(f"| {step_index} | {repo_key} | Implement repo-local change | pending |")
@@ -766,11 +1066,11 @@ def render_task_files(context: dict[str, Any], task_id: str, request: str) -> di
     step_rows.append(f"| {step_index} | all | Update validation and final task status | pending |")
 
     status_rows = "\n".join(
-        f"| {repo['key']} | not started | {repo.get('expected_branch') or 'TBD'} | - | pending |"
+        f"| {repo['key']} | not started | {branches.get(repo['key']) or 'TBD'} | - | pending |"
         for repo in repos
     )
     branch_rows = "\n".join(
-        f"| {repo['key']} | {repo.get('expected_branch') or 'TBD'} | TBD | pending |"
+        f"| {repo['key']} | {branches.get(repo['key']) or 'TBD'} | TBD | pending |"
         for repo in repos
     )
     check_rows: list[str] = []
@@ -780,7 +1080,7 @@ def render_task_files(context: dict[str, Any], task_id: str, request: str) -> di
             for command in checks:
                 check_rows.append(f"| {repo['key']} | `{command}` | pending |  |")
         else:
-            check_rows.append(f"| {repo['key']} | TBD | pending | No checks declared in repos.yaml. |")
+            check_rows.append(f"| {repo['key']} | TBD | pending | No checks declared in scenario.yaml. |")
 
     details = []
     for repo in repos:
@@ -790,11 +1090,15 @@ def render_task_files(context: dict[str, Any], task_id: str, request: str) -> di
                     f"### `{repo['key']}`",
                     "",
                     f"- Path: `{repo.get('path') or 'TBD'}`",
-                    f"- Expected branch: `{repo.get('expected_branch') or 'TBD'}`",
+                    f"- Expected task branch: `{branches.get(repo['key']) or 'TBD'}`",
                     "- Instruction sources:",
                     markdown_list(repo.get("instruction_sources") or []),
                     "- Key files:",
                     markdown_list(repo.get("key_files") or []),
+                    "- Outputs:",
+                    markdown_outputs(repo.get("outputs") or []),
+                    "- Dependencies:",
+                    markdown_dependencies(repo.get("depends_on") or []),
                     "- Checks:",
                     markdown_list(repo.get("checks") or []),
                 ]
@@ -825,7 +1129,8 @@ def render_task_files(context: dict[str, Any], task_id: str, request: str) -> di
 
 ## Assumptions
 
-- The scenario configuration is authoritative for repository order and branch gates.
+- The scenario configuration is authoritative for repository order.
+- This task status is authoritative for expected task branches.
 - Repository-local instructions remain authoritative inside each business repository.
 
 ## Scenario Order
@@ -931,10 +1236,8 @@ def print_text_report(report: dict[str, Any]) -> None:
         line = f"- {repo['key']}"
         if repo.get("path"):
             line += f" path={repo['path']}"
-        if repo.get("expected_branch"):
-            line += f" expected_branch={repo['expected_branch']}"
-        if repo.get("registry") == "missing":
-            line += " registry=missing"
+        if repo.get("config") == "missing":
+            line += " config=missing"
         print(line)
     print("")
     if report["findings"]:
@@ -990,7 +1293,18 @@ def print_plan_report(report: dict[str, Any]) -> None:
     for index, repo in enumerate(report["repos"], 1):
         print(f"{index}. {repo['key']}")
         print(f"   path: {repo.get('path') or 'TBD'}")
-        print(f"   expected_branch: {repo.get('expected_branch') or 'TBD'}")
+        print(f"   outputs: {', '.join(output.get('id', 'TBD') for output in repo.get('outputs') or [] if isinstance(output, dict)) or '-'}")
+        print(
+            "   depends_on: "
+            + (
+                ", ".join(
+                    f"{dependency.get('repo', 'TBD')}:{dependency.get('output', 'TBD')}"
+                    for dependency in repo.get("depends_on") or []
+                    if isinstance(dependency, dict)
+                )
+                or "-"
+            )
+        )
         print(f"   instruction_sources: {', '.join(repo.get('instruction_sources') or []) or '-'}")
         print(f"   key_files: {', '.join(repo.get('key_files') or []) or '-'}")
         print(f"   checks: {', '.join(repo.get('checks') or []) or '-'}")
@@ -1061,8 +1375,10 @@ def cmd_init_task(args: argparse.Namespace) -> int:
 
     context = scenario_context(root, args.scenario)
     task_id = args.task_id or f"{dt.date.today().isoformat()}-{args.scenario}"
+    shared_branch = args.branch or f"scenario/{task_id}"
+    branches = task_branch_map(context, shared_branch, parse_branch_overrides(args.repo_branch))
     task_dir = root / "tasks" / task_id
-    files = render_task_files(context, task_id, args.request or "")
+    files = render_task_files(context, task_id, args.request or "", branches)
 
     created: list[str] = []
     existing: list[str] = []
@@ -1107,8 +1423,13 @@ def cmd_init_task(args: argparse.Namespace) -> int:
 
 def cmd_preflight(args: argparse.Namespace) -> int:
     root = harness_root()
-    report = collect_preflight(root, args.scenario)
     task_dir = resolve_task_dir(root, args.task) if args.task else None
+    expected_branches = read_task_branches(task_dir) if task_dir else {}
+    expected_branches.update(parse_branch_overrides(args.repo_branch))
+    if args.branch:
+        context = scenario_context(root, args.scenario)
+        expected_branches = task_branch_map(context, args.branch, expected_branches)
+    report = collect_preflight(root, args.scenario, expected_branches)
 
     if task_dir and not args.no_write:
         if not task_dir.exists():
@@ -1196,7 +1517,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = subparsers.add_parser(
         "validate-scenario",
-        help="Validate scenario config, repo references, paths, and branch gates.",
+        help="Validate scenario config, repo paths, checks, and basic field shapes.",
     )
     validate.add_argument("scenario", help="Scenario directory name under scenarios/.")
     validate.add_argument("--json", action="store_true", help="Emit stable JSON output.")
@@ -1209,6 +1530,15 @@ def build_parser() -> argparse.ArgumentParser:
     init_task.add_argument("scenario", help="Scenario directory name under scenarios/.")
     init_task.add_argument("task_id", nargs="?", help="Task directory name under tasks/.")
     init_task.add_argument("--request", default="", help="User request text to place in spec.md.")
+    init_task.add_argument(
+        "--branch",
+        help="Shared expected branch for this task. Defaults to scenario/<task-id>.",
+    )
+    init_task.add_argument(
+        "--repo-branch",
+        action="append",
+        help="Per-repo expected branch override as REPO=BRANCH. May be repeated.",
+    )
     init_task.add_argument(
         "--allow-invalid",
         action="store_true",
@@ -1228,12 +1558,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Task id under tasks/ or a task directory path. When present, status.md and validation.md are updated.",
     )
     preflight.add_argument("--no-write", action="store_true", help="Do not update task files.")
+    preflight.add_argument("--branch", help="Shared expected branch for this preflight run.")
+    preflight.add_argument(
+        "--repo-branch",
+        action="append",
+        help="Per-repo expected branch override as REPO=BRANCH. May be repeated.",
+    )
     preflight.add_argument("--json", action="store_true", help="Emit stable JSON output.")
     preflight.set_defaults(func=cmd_preflight)
 
     plan = subparsers.add_parser(
         "plan-scenario",
-        help="Print the selected scenario order, repo paths, branch gates, key files, and checks.",
+        help="Print the selected scenario order, repo paths, key files, and checks.",
     )
     plan.add_argument("scenario", help="Scenario directory name under scenarios/.")
     plan.add_argument("--json", action="store_true", help="Emit stable JSON output.")

@@ -8,7 +8,7 @@ Task ID:
 
 | Repo | Status | Expected Branch | Actual Branch | Checks |
 | --- | --- | --- | --- | --- |
-| repo-key-from-scenario-order | not started | expected-branch-from-scenario-yaml | - | pending |
+| repo-key-from-scenario-order | not started | expected-branch-from-task | - | pending |
 
 ## Current Step
 
