@@ -86,7 +86,6 @@ scenario-harness/
       scenario.yaml
       README.md
   tasks/
-    README.md
   templates/
     decisions.md
     spec.md
@@ -117,8 +116,6 @@ scenario-harness/
 示例：
 
 ```yaml
-description: Update billing API contract and downstream consumers.
-
 order:
   - api
   - web
@@ -311,10 +308,13 @@ agent 应该：
 8. 按 `scenarios.<name>.order` 执行
 9. 进入每个 repo 后读取 scenario 定义的 `repos.<repo>.instruction_sources`
 10. 检查 scenario 定义的 `repos.<repo>.key_files`
-11. 实施 repo-local 修改
-12. 运行每个 affected repo 的 repo-local `checks`，优先使用 `bin/scenario-harness checks <scenario> --run --task <task-id>`
-13. 更新 `tasks/<task-id>/` 下的任务文件
-14. 汇报 diff 范围、验证结果、风险和交付顺序
+11. 在编辑代码前，用 key files 中读到的信息补全 `tasks/<task-id>/spec.md`，记录 implementation notes、影响面、风险和验证重点
+12. 按补全后的 task spec 实施 repo-local 修改
+13. 如果用户澄清会影响目标、范围、实现、验证、风险或交付顺序，继续前先同步到 `spec.md`
+14. 如果实现需要明显偏离补全后的 spec，先在 `decisions.md` 记录原因，并把变化同步回 `spec.md`
+15. 运行每个 affected repo 的 repo-local `checks`，优先使用 `bin/scenario-harness checks <scenario> --run --task <task-id>`
+16. 更新 `tasks/<task-id>/` 下的任务文件
+17. 汇报 diff 范围、验证结果、风险和交付顺序
 
 agent 不应该：
 
@@ -332,7 +332,7 @@ agent 不应该：
 
 | 文件 | 作用 |
 | --- | --- |
-| `spec.md` | 用户需求、范围、非目标、假设、repo 顺序和执行步骤 |
+| `spec.md` | 用户需求、用户澄清、范围、非目标、假设、repo 顺序、执行步骤和 key-file-derived implementation notes |
 | `status.md` | 当前进度、分支、阻塞点、跳过的文件 |
 | `decisions.md` | 兼容性选择、迁移决策、被拒绝的方案 |
 | `validation.md` | repo-local 编译和检查结果、已知失败、剩余风险 |
@@ -389,13 +389,14 @@ CI/CD 平台，而是为 agent 明确标出 issue、CI、Git hosting、部署平
 3. 初始化或恢复 task
 4. 准备分支
 5. Preflight
-6. 实施 repo-local 修改
-7. 运行本地 checks
-8. Commit 并 push 分支
-9. 创建或更新 PR
-10. 收集 CI 状态
-11. 部署或发布
-12. 收口 task 并回填外部需求
+6. 基于 key files 补全 task spec
+7. 按补全后的 spec 实施 repo-local 修改
+8. 运行本地 checks
+9. Commit 并 push 分支
+10. 创建或更新 PR
+11. 收集 CI 状态
+12. 部署或发布
+13. 收口 task 并回填外部需求
 ```
 
 未来 delivery commands 应和本地执行 commands 分层：

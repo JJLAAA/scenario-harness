@@ -458,16 +458,6 @@ def validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
             )
         )
 
-    if not isinstance(scenario_data.get("description"), str) or not scenario_data.get("description"):
-        findings.append(
-            Finding(
-                "error",
-                "missing_description",
-                "scenario.yaml must include a non-empty 'description'.",
-                "Add a one-sentence scenario summary.",
-            )
-        )
-
     if not repos:
         findings.append(
             Finding(
@@ -638,7 +628,6 @@ def scenario_context(root: Path, scenario: str) -> dict[str, Any]:
 
     return {
         "scenario": scenario,
-        "description": scenario_data.get("description") or "",
         "scenario_dir": str(scenario_dir),
         "repos": entries,
     }
@@ -1059,7 +1048,9 @@ def render_task_files(
             f"| {step_index} | {repo_key} | Inspect status, verify task branch, read instructions, and inspect key files | pending |"
         )
         step_index += 1
-        step_rows.append(f"| {step_index} | {repo_key} | Implement repo-local change | pending |")
+        step_rows.append(f"| {step_index} | {repo_key} | Enrich spec from key files before editing code | pending |")
+        step_index += 1
+        step_rows.append(f"| {step_index} | {repo_key} | Implement repo-local change according to enriched spec | pending |")
         step_index += 1
         step_rows.append(f"| {step_index} | {repo_key} | Run repo-local checks | pending |")
         step_index += 1
@@ -1117,6 +1108,12 @@ def render_task_files(
 
 {request or 'TBD.'}
 
+## User Clarifications
+
+Record any user clarification that affects goals, scope, implementation, validation, risks, or delivery order before continuing implementation.
+
+- None yet.
+
 ## Scope
 
 {scope_lines or 'TBD.'}
@@ -1140,6 +1137,12 @@ def render_task_files(
 ## Repository Context
 
 {chr(10).join(details) if details else 'TBD.'}
+
+## Key File Implementation Notes
+
+Before editing code in each repository, read the repo-local instructions, inspect the scenario-defined key files, and update this section with concrete implementation notes, expected impact areas, risks, and validation focus. Implement according to the enriched spec. Any material deviation must be recorded in `decisions.md` and reflected back here before continuing.
+
+- Pending key file review.
 
 ## Steps
 
@@ -1286,7 +1289,6 @@ def print_preflight_report(report: dict[str, Any]) -> None:
 
 def print_plan_report(report: dict[str, Any]) -> None:
     print(f"scenario: {report['scenario']}")
-    print(f"description: {report['description']}")
     print(f"scenario_dir: {report['scenario_dir']}")
     print("")
     print("order:")

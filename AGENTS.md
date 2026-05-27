@@ -40,7 +40,8 @@ This project treats agent readability as a primary design requirement.
    - verify the current branch exactly matches the task-defined branch
    - read scenario-defined local instructions in the configured order
    - inspect scenario-defined key files
-   - implement the repo-local change
+   - update `tasks/<task>/spec.md` with implementation notes, impact areas, risks, and validation focus learned from those key files
+   - implement the repo-local change according to the enriched task spec
    - run repo-local checks
    - record the result
 9. Update task status.
@@ -89,10 +90,12 @@ For each repository:
    - `Cargo.toml`
    - `go.mod`
 6. Inspect scenario-defined `repos.<repo>.key_files`.
-7. Implement the repo-local change.
-8. Run repo-defined checks.
-9. Record check output summary in `tasks/<task>/validation.md`.
-10. Do not commit unless the user or scenario explicitly requests commits.
+7. Enrich `tasks/<task>/spec.md` with repo-local implementation notes, impact areas, risks, and validation focus discovered from key files before editing code.
+8. Implement the repo-local change according to the enriched task spec.
+9. If implementation requires a material deviation from the enriched spec, record the reason in `tasks/<task>/decisions.md` and update `tasks/<task>/spec.md` before continuing.
+10. Run repo-defined checks.
+11. Record check output summary in `tasks/<task>/validation.md`.
+12. Do not commit unless the user or scenario explicitly requests commits.
 
 ## Task Directory Protocol
 
@@ -117,6 +120,8 @@ When creating a new task directory:
 - If the user request or selected task files do not specify the expected branch for every affected repository, ask the user to clarify before entering or editing any business repository.
 - Do not infer expected branches from the repository's current branch, default branch, scenario name, or task id.
 - Fill `spec.md` with the scenario, user request, scope, non-goals, assumptions, repository order, and execution steps.
+- Record user clarifications that affect task goals, scope, implementation, validation, risks, or delivery order in `spec.md` before continuing implementation.
+- Before implementing code, enrich `spec.md` from scenario-defined `key_files` after branch verification and repo-local instruction review.
 - Fill `status.md` with the task id, scenario, initial repo states, skipped instruction files, and current step.
 - Adjust `spec.md` and `validation.md` to match the scenario's actual repository keys and order.
 
@@ -133,10 +138,12 @@ Use those files to determine completed work, current blockers, checked repo stat
 
 Write task files at the time their information becomes true. Do not wait until the end of the scenario to reconstruct progress from memory.
 
-- `spec.md` is written when the task directory is created or selected. It records the scenario, user request, scope, non-goals, assumptions, repository order, and execution steps. Update it when the user changes the request, a scope assumption becomes false, or steps are completed, skipped, blocked, added, or reordered.
+- `spec.md` is written when the task directory is created or selected. It records the scenario, user request, user clarifications, scope, non-goals, assumptions, repository order, execution steps, and key-file-derived implementation notes. Update it after reading scenario-defined `key_files`, when the user clarifies anything that affects implementation or validation, and when the user changes the request, a scope assumption becomes false, or steps are completed, skipped, blocked, added, or reordered.
 - `status.md` is the live task state. Update it before and after meaningful work, including task creation, task resume, repo entry, repo completion, blockers, skipped instruction files, and the final task state.
 - `validation.md` is written after checks are run, skipped, or fail to run. Record the repo, command, result, important output summary, known failures, and residual risk.
 - `decisions.md` is written when the agent makes or discovers a judgment that affects implementation, compatibility, migration, delivery order, or risk. Record why the decision was made, not just what changed.
+
+User clarifications that only describe transient progress belong in `status.md`. User clarifications that affect implementation choices should also be captured in `decisions.md` when they explain why the task changed.
 
 Do not duplicate routine progress in `decisions.md`; put progress in `status.md`. Do not put check output in `status.md`; summarize checks in `validation.md`. Do not treat `spec.md` as a scratchpad for transient notes after execution starts.
 
@@ -151,7 +158,6 @@ Path resolution:
 `scenarios/<scenario>/scenario.yaml`:
 
 - `scenario.yaml` is the authoritative execution template for the scenario.
-- `description` is a one-sentence scenario summary.
 - `repos` is a mapping of every repository involved in the scenario.
 - `order` is authoritative for execution sequence and must use keys from `repos`.
 - Repo keys are stable scenario-local identifiers. Use them for task tables, status records, validation records, and cross-repo references; do not replace them with directory names unless they are identical.
@@ -179,6 +185,13 @@ Path resolution:
 - The scenario README is the human-readable SOP, rationale, invariants, compatibility guidance, and completion criteria for the scenario.
 - It should explain why the repositories are coordinated, what cross-repo behavior must remain true, and how to make judgment calls that do not fit cleanly in YAML.
 - It should not duplicate or override structural execution fields from `scenario.yaml`, such as `repos` or `order`.
+- Use the current scenario README structure as follows:
+  - `Scope` describes when agents should use the scenario, covered change types, out-of-scope work, and assumptions that must hold before the scenario applies.
+  - `Cross-Repo Relationship` explains why the repositories are coordinated, which repo owns the source of truth, how downstream repos consume upstream outputs, what must remain consistent, and which conflicts require user direction.
+  - `Scenario-Specific Rules` records invariants and execution constraints such as compatibility requirements, migration or rollout rules, generated-artifact handling, extra validation expectations, and actions agents must not take automatically.
+  - `Required Clarifications` lists scenario-level decisions that must be answered before implementation when the user request does not already answer them, why each answer matters, and where to record the confirmed answer in the active task directory.
+  - `Risk Areas` highlights common regression risks, data/API/schema/auth/migration/generated-code hazards, user-visible behavior that is easy to miss, and validation gaps that repo checks may not cover.
+  - `Completion Criteria` defines how agents know the scenario task is complete, including expected task-file evidence, required checks or documented skip reasons, cross-repo behavior to verify, and residual risks to report.
 - If `scenario.yaml` and the scenario README conflict on structural execution, follow `scenario.yaml` unless doing so would be destructive or unsafe.
 - If they conflict on business intent, compatibility requirements, or completion criteria, stop and report the conflict before editing repositories.
 

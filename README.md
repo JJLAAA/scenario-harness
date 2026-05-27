@@ -80,7 +80,6 @@ scenario-harness/
       scenario.yaml
       README.md
   tasks/
-    README.md
   templates/
     decisions.md
     spec.md
@@ -109,8 +108,6 @@ The harness is assumed to be standalone; no placement field is required.
 Create a scenario directory with `scenario.yaml` and `README.md`.
 
 ```yaml
-description: Update billing API contract and downstream consumers.
-
 order:
   - api
   - web
@@ -263,7 +260,8 @@ and scenarios/billing-contract-change/README.md.
 
 Then resolve repo paths, inspect git status for affected repos, enter repos in scenario order,
 verify each repo is on the branch specified by the task, read scenario-defined repo-local instruction sources,
-inspect key files, implement the requested change, run checks, and update the task status, validation report, and decisions.
+inspect key files, enrich the task spec, implement the requested change according to the enriched spec,
+run checks, and update the task status, validation report, and decisions.
 Do not commit unless I explicitly ask.
 ```
 
@@ -306,10 +304,13 @@ The agent should:
 8. Follow `scenarios.<name>.order`.
 9. For each repo, read scenario-defined `repos.<repo>.instruction_sources`.
 10. Inspect scenario-defined `repos.<repo>.key_files`.
-11. Implement repo-local changes.
-12. Run each affected repository's repo-local `checks`, preferably through `bin/scenario-harness checks <scenario> --run --task <task-id>`.
-13. Update task files under `tasks/<task-id>/`.
-14. Report diff scope, validation results, risks, and delivery order.
+11. Enrich `tasks/<task-id>/spec.md` with implementation notes, impact areas, risks, and validation focus learned from those key files before editing code.
+12. Implement repo-local changes according to the enriched task spec.
+13. Record user clarifications that affect goals, scope, implementation, validation, risks, or delivery order in `spec.md` before continuing.
+14. Record any material deviation from the enriched spec in `decisions.md` and reflect it back into `spec.md` before continuing.
+15. Run each affected repository's repo-local `checks`, preferably through `bin/scenario-harness checks <scenario> --run --task <task-id>`.
+16. Update task files under `tasks/<task-id>/`.
+17. Report diff scope, validation results, risks, and delivery order.
 
 The agent should not:
 
@@ -327,7 +328,7 @@ Each task directory should contain:
 
 | File | Purpose |
 | --- | --- |
-| `spec.md` | User request, scope, non-goals, assumptions, repo order, and execution steps. |
+| `spec.md` | User request, user clarifications, scope, non-goals, assumptions, repo order, execution steps, and key-file-derived implementation notes. |
 | `status.md` | Current progress, branches, blockers, skipped files. |
 | `decisions.md` | Compatibility choices, migration decisions, rejected options. |
 | `validation.md` | Repo-local build and check results, known failures, and residual risk. |
@@ -386,13 +387,14 @@ Recommended lifecycle:
 3. Initialize or resume task
 4. Prepare branches
 5. Preflight
-6. Implement repo-local changes
-7. Run local checks
-8. Commit and push branches
-9. Create or update PRs
-10. Collect CI status
-11. Deploy or release
-12. Close out task and external tracking
+6. Enrich task spec from key files
+7. Implement repo-local changes according to the enriched spec
+8. Run local checks
+9. Commit and push branches
+10. Create or update PRs
+11. Collect CI status
+12. Deploy or release
+13. Close out task and external tracking
 ```
 
 Future delivery commands should be layered separately from local execution commands:
