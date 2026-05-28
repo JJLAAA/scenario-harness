@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scenario Harness 工作流程</title>
+  <style>
+    :root {
+      --text: #0f172a;
+      --muted: #475569;
+      --line: #cbd5e1;
+      --panel: #ffffff;
+      --soft: #f8fafc;
+      --blue: #2563eb;
+      --green: #16a34a;
+      --amber: #d97706;
+      --indigo: #4338ca;
+      --violet: #7c3aed;
+      --teal: #0f766e;
+      --ok: #10b981;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --info: #3b82f6;
+      --event: #f97316;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #f1f5f9;
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .diagram-wrapper {
+      max-width: 1480px;
+      min-width: 1180px;
+      margin: 0 auto;
+      padding: 30px 28px 34px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: flex-end;
+      margin-bottom: 24px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+      line-height: 1.16;
+      font-weight: 760;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin: 0;
+      max-width: 830px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .legend {
+      display: grid;
+      grid-template-columns: repeat(2, max-content);
+      gap: 7px 12px;
+      padding: 12px 14px;
+      border: 1px solid #dbe3ef;
+      border-radius: 10px;
+      background: #fff;
+      font-size: 11px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .legend span::before {
+      content: "";
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      margin-right: 6px;
+      border-radius: 3px;
+      vertical-align: -1px;
+    }
+
+    .required::before { background: var(--ok); }
+    .optional::before { background: var(--warn); }
+    .stop::before { background: var(--danger); }
+    .record::before { background: var(--info); }
+
+    .flow {
+      display: grid;
+      grid-template-columns: 188px 42px 188px 42px 188px 42px 188px 42px 214px 42px 188px;
+      align-items: stretch;
+      gap: 0;
+      overflow: visible;
+    }
+
+    .phase {
+      position: relative;
+      min-height: 430px;
+      margin-top: 20px;
+      padding: 22px 12px 12px;
+      border: 1.5px solid;
+      border-radius: 16px;
+      box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+    }
+
+    .phase.blue {
+      border-color: #93c5fd;
+      background: linear-gradient(180deg, #eff6ff, #dbeafe);
+    }
+
+    .phase.green {
+      border-color: #86efac;
+      background: linear-gradient(180deg, #f0fdf4, #dcfce7);
+    }
+
+    .phase.amber {
+      border-color: #fcd34d;
+      background: linear-gradient(180deg, #fffbeb, #fef3c7);
+    }
+
+    .phase.indigo {
+      border-color: #a5b4fc;
+      background: linear-gradient(180deg, #eef2ff, #e0e7ff);
+    }
+
+    .phase.violet {
+      border-color: #c4b5fd;
+      background: linear-gradient(180deg, #f5f3ff, #ede9fe);
+    }
+
+    .phase.teal {
+      border-color: #99f6e4;
+      background: linear-gradient(180deg, #f0fdfa, #ccfbf1);
+    }
+
+    .badge {
+      position: absolute;
+      top: -13px;
+      left: 16px;
+      padding: 3px 12px;
+      border-radius: 20px;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.4;
+      white-space: nowrap;
+    }
+
+    .blue .badge { background: var(--blue); }
+    .green .badge { background: var(--green); }
+    .amber .badge { background: var(--amber); }
+    .indigo .badge { background: var(--indigo); }
+    .violet .badge { background: var(--violet); }
+    .teal .badge { background: var(--teal); }
+
+    .card {
+      margin-bottom: 10px;
+      padding: 12px 12px;
+      border-radius: 10px;
+      background: var(--panel);
+      box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+    }
+
+    .card.dashed {
+      border: 1.5px dashed #94a3b8;
+      background: #f8fafc;
+      box-shadow: none;
+    }
+
+    .card-title {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 13px;
+      font-weight: 750;
+      line-height: 1.3;
+    }
+
+    .icon {
+      width: 20px;
+      height: 20px;
+      border-radius: 5px;
+      flex: 0 0 auto;
+    }
+
+    .title-text {
+      white-space: nowrap;
+    }
+
+    .blue .icon { background: var(--blue); }
+    .green .icon { background: var(--green); }
+    .amber .icon { background: var(--amber); }
+    .indigo .icon { background: var(--indigo); }
+    .violet .icon { background: var(--violet); }
+    .teal .icon { background: var(--teal); }
+
+    .row {
+      margin-bottom: 6px;
+      padding: 7px 8px;
+      border-radius: 5px;
+      background: var(--soft);
+      border-left: 3px solid var(--info);
+      color: #334155;
+      font-size: 11.6px;
+      line-height: 1.42;
+    }
+
+    .row:last-child {
+      margin-bottom: 0;
+    }
+
+    .row.req { border-left-color: var(--ok); }
+    .row.opt { border-left-color: var(--warn); }
+    .row.stop { border-left-color: var(--danger); }
+    .row.info { border-left-color: var(--info); }
+    .row.event { border-left-color: var(--event); }
+
+    code {
+      font-family: "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+      font-size: 0.94em;
+      color: #1e293b;
+    }
+
+    .meta {
+      display: inline-block;
+      margin-left: 4px;
+      padding: 2px 7px;
+      border-radius: 10px;
+      background: #dcfce7;
+      color: #166534;
+      font-size: 10px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .connector {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 20px;
+      min-height: 430px;
+    }
+
+    .notes {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 22px;
+    }
+
+    .note {
+      min-height: 138px;
+      padding: 14px;
+      border-radius: 10px;
+      background: #fff;
+      box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+    }
+
+    .note-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+      font-size: 13px;
+      font-weight: 760;
+    }
+
+    .num {
+      display: grid;
+      width: 22px;
+      height: 22px;
+      place-items: center;
+      border-radius: 50%;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .note:nth-child(1) .num { background: var(--blue); }
+    .note:nth-child(2) .num { background: var(--violet); }
+    .note:nth-child(3) .num { background: var(--amber); }
+
+    .note p {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 11.8px;
+      line-height: 1.45;
+    }
+
+    .mini-code {
+      margin: 0;
+      padding: 9px 10px;
+      border: 1px solid #cbd5e1;
+      border-radius: 5px;
+      background: #f8fafc;
+      font-family: "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+
+    @media (max-width: 1220px) {
+      body {
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="diagram-wrapper">
+    <header>
+      <div>
+        <h1>Scenario Harness 工作流程</h1>
+        <p class="subtitle">从左到右展示一次跨仓库场景交付：先由 harness 选择并校验 scenario，再把 task 作为恢复点，经过计划与评审闸门后，按场景顺序进入业务仓库执行、验证并记录完成状态。</p>
+      </div>
+      <div class="legend" aria-label="语义颜色">
+        <span class="required">必需/通过</span>
+        <span class="optional">可选/注意</span>
+        <span class="stop">停止/阻塞</span>
+        <span class="record">记录/上下文</span>
+      </div>
+    </header>
+
+    <main class="flow" aria-label="Scenario Harness workflow">
+      <section class="phase blue">
+        <div class="badge">1 入口识别</div>
+        <div class="card">
+          <div class="card-title"><span class="icon"></span>确定 scenario</div>
+          <div class="row req">用户显式命名时直接使用；否则只读扫描 <code>scenarios/*</code> 找匹配。</div>
+          <div class="row stop">多个候选或无匹配时先询问，不创建 task、不进入业务 repo。</div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="icon"></span>必读顺序</div>
+          <div class="row req"><code>AGENTS.md</code> 定义全局协议和 YAML 语义。</div>
+          <div class="row req"><code>scenario.yaml</code> 定义 repo、顺序、依赖、检查。</div>
+          <div class="row req"><code>README.md</code> 定义 SOP、风险和完成标准。</div>
+        </div>
+      </section>
+
+      <div class="connector">
+        <svg width="42" height="70" viewBox="0 0 42 70" overflow="visible" role="img" aria-label="校验后继续">
+          <defs><marker id="arrow-blue" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#2563eb"/></marker></defs>
+          <path d="M2,35 C14,35 26,35 39,35" stroke="#2563eb" stroke-width="2" stroke-dasharray="5,3" fill="none" marker-end="url(#arrow-blue)"/>
+          <text x="4" y="25" font-size="10.5" fill="#2563eb" font-family="-apple-system,sans-serif">选定</text>
+        </svg>
+      </div>
+
+      <section class="phase green">
+        <div class="badge">2 模板校验</div>
+        <div class="card">
+          <div class="card-title"><span class="icon"></span>机械验证</div>
+          <div class="row req">运行 <code>bin/scenario-harness validate-scenario</code>。</div>
+          <div class="row stop">错误时停止；恢复任务则记录 <code>scenario_invalid</code>。</div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="icon"></span>执行摘要</div>
+          <div class="row info"><code>plan-scenario</code> 汇总 repo 顺序、路径、输出、依赖、指令、关键文件和 checks。</div>
+          <div class="row req">YAML 结构由 <code>scenario.yaml</code> 权威定义。</div>
+        </div>
+      </section>
+
+      <div class="connector">
+        <svg width="42" height="70" viewBox="0 0 42 70" overflow="visible" role="img" aria-label="初始化 task">
+          <defs><marker id="arrow-green" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#16a34a"/></marker></defs>
+          <path d="M2,35 C14,35 26,35 39,35" stroke="#16a34a" stroke-width="2" stroke-dasharray="5,3" fill="none" marker-end="url(#arrow-green)"/>
+          <text x="4" y="25" font-size="10.5" fill="#16a34a" font-family="-apple-system,sans-serif">有效</text>
+        </svg>
+      </div>
+
+      <section class="phase amber">
+        <div class="badge">3 Task 记忆</div>
+        <div class="card dashed">
+          <div class="card-title"><span class="icon"></span><span class="title-text">恢复点</span><span class="meta">推荐复用模式</span></div>
+          <div class="row req"><code>init-task</code> 创建 <code>spec.md</code>、<code>status.md</code>、<code>decisions.md</code>、<code>validation.md</code>。</div>
+          <div class="row info">继续任务时先读四个 task 文件，再重新校验 scenario。</div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="icon"></span>任务特定状态</div>
+          <div class="row req">expected branch 只存在 task 文件，不写进 scenario。</div>
+          <div class="row event">所有 gate、blocker、验证结果都即时落盘。</div>
+        </div>
+      </section>
+
+      <div class="connector">
+        <svg width="42" height="70" viewBox="0 0 42 70" overflow="visible" role="img" aria-label="进入计划">
+          <defs><marker id="arrow-amber" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#d97706"/></marker></defs>
+          <path d="M2,35 C14,35 26,35 39,35" stroke="#d97706" stroke-width="2" stroke-dasharray="5,3" fill="none" marker-end="url(#arrow-amber)"/>
+          <text x="2" y="25" font-size="10.5" fill="#d97706" font-family="-apple-system,sans-serif">建档</text>
+        </svg>
+      </div>
+
+      <section class="phase indigo">
+        <div class="badge">4 计划闸门</div>
+        <div class="card">
+          <div class="card-title"><span class="icon"></span>Preflight</div>
+          <div class="row req"><code>preflight</code> 检查分支、dirty state、缺失指令和关键文件。</div>
+          <div class="row stop">分支不匹配时停止，不自动 checkout 或创建分支。</div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="icon"></span>Planning Pass</div>
+          <div class="row req">按 repo 顺序读取本地指令和 key files，识别合同、风险、下游影响。</div>
+          <div class="row info">更新 spec、dependency readiness、Planning Gate。</div>
+          <div class="row stop">Spec Review Gate 需用户批准或明确跳过后才实现。</div>
+        </div>
+      </section>
+
+      <div class="connector">
+        <svg width="42" height="70" viewBox="0 0 42 70" overflow="visible" role="img" aria-label="审批后实现">
+          <defs><marker id="arrow-indigo" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#4338ca"/></marker></defs>
+          <path d="M2,35 C14,35 26,35 39,35" stroke="#4338ca" stroke-width="2" stroke-dasharray="5,3" fill="none" marker-end="url(#arrow-indigo)"/>
+          <text x="0" y="25" font-size="10.5" fill="#4338ca" font-family="-apple-system,sans-serif">批准</text>
+        </svg>
+      </div>
+
+      <section class="phase violet">
+        <div class="badge">5 仓库执行循环</div>
+        <div class="card">
+          <div class="card-title"><span class="icon"></span>按场景顺序进入</div>
+          <div class="row req">再次运行 <code>git status</code> 并精确匹配 expected branch。</div>
+          <div class="row req">检查 upstream dependency readiness 后再改下游 repo。</div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="icon"></span>实现与验证</div>
+          <div class="row event">设置 <code>implementing:&lt;repo&gt;</code>，补充 repo-local notes 后修改代码。</div>
+          <div class="row req">设置 <code>validating:&lt;repo&gt;</code>，运行 scenario 声明 checks。</div>
+          <div class="row stop">检查失败默认 blocked；用户接受失败才可继续。</div>
+        </div>
+      </section>
+
+      <div class="connector">
+        <svg width="42" height="70" viewBox="0 0 42 70" overflow="visible" role="img" aria-label="记录完成">
+          <defs><marker id="arrow-violet" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#7c3aed"/></marker></defs>
+          <path d="M2,35 C14,35 26,35 39,35" stroke="#7c3aed" stroke-width="2" stroke-dasharray="5,3" fill="none" marker-end="url(#arrow-violet)"/>
+          <text x="0" y="25" font-size="10.5" fill="#7c3aed" font-family="-apple-system,sans-serif">验证</text>
+        </svg>
+      </div>
+
+      <section class="phase teal">
+        <div class="badge">6 完成/恢复</div>
+        <div class="card">
+          <div class="card-title"><span class="icon"></span>完成条件</div>
+          <div class="row req">所有 repo 完成或有跳过理由；checks 通过、跳过或失败接受已记录。</div>
+          <div class="row req">outputs、depends_on、风险和完成标准写入 task 文件。</div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="icon"></span>中断安全</div>
+          <div class="row info"><code>status.md</code> 保存 current step、repo 表、gate、依赖 readiness 和历史。</div>
+          <div class="row event">恢复时从 task 文件和最新 scenario 结构继续，不依赖对话记忆。</div>
+        </div>
+      </section>
+    </main>
+
+    <section class="notes" aria-label="关键机制">
+      <article class="note">
+        <div class="note-head"><span class="num">1</span>场景层负责结构</div>
+        <p>harness 只声明跨 repo 的参与者、顺序、依赖、关键入口和检查，不替代业务 repo 的本地规则。</p>
+        <pre class="mini-code">scenario.yaml
+order -> repos -> outputs
+depends_on -> checks</pre>
+      </article>
+      <article class="note">
+        <div class="note-head"><span class="num">2</span>Task 层负责恢复</div>
+        <p>每次具体交付都把分支、计划、阻塞、验证和决策写入 task 目录，保证可中断、可恢复。</p>
+        <pre class="mini-code">tasks/&lt;task&gt;/
+spec.md status.md
+decisions.md validation.md</pre>
+      </article>
+      <article class="note">
+        <div class="note-head"><span class="num">3</span>业务 repo 保持独立</div>
+        <p>每个 repo 独立检查 git 状态、分支、本地指令和测试结果；不混合提交，不自动执行破坏性操作。</p>
+        <pre class="mini-code">repo entry:
+read instructions
+inspect key files
+implement -> checks</pre>
+      </article>
+    </section>
+  </div>
+</body>
+</html>
