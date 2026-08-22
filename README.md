@@ -66,7 +66,7 @@ The default execution model — one agent session running the scenario serially 
 1. **Cross-repo context contamination is mitigated, not eliminated.** The protocol firewalls (branch check before reading repo context, re-reading instruction sources on every repo entry, never applying one repo's instructions to another) are behavioral discipline, not runtime isolation. Conversation history still carries traces of earlier repos, and compaction summaries blur repo boundaries further. The per-repo summaries required by the execution model bound what carries forward, but a single session cannot guarantee isolation.
 2. **Repo-local runtime mechanisms do not activate.** As noted in "Relationship To Repo-Local Spec Frameworks", hooks, skills, slash commands, and MCP injection bind to project configuration discovered at session start. An agent started in the harness directory that later enters a business repo does not re-trigger that discovery, so single-repo runtime support is absent and compliance runs at the document level.
 
-The structural fix for both limits is the same: run each repository in a fresh agent session started inside that repository, where its runtime mechanisms activate normally. (Verified activation details for headless CLIs — including which mechanisms do not activate, such as Claude Code subagent-frontmatter hooks and approval-gated MCP tools — are recorded in `docs/subprocess-agent-run.md`.) Task files make this possible without orchestration, because they are session-external memory. A per-repo session reads `spec.md`, `status.md`, `decisions.md`, and `validation.md` first, does the repo-local work, and writes results back. The protocol is compatible with this pattern; it simply does not schedule it, and multi-agent orchestration is deferred beyond the MVP.
+The structural fix for both limits is the same: run each repository in a fresh agent session started inside that repository, where its runtime mechanisms activate normally. (Verified activation details for headless CLIs — including which mechanisms do not activate, such as Claude Code subagent-frontmatter hooks and approval-gated MCP tools — are recorded in `docs/subprocess-agent-run.md`.) Task files make this possible without orchestration, because they are session-external memory. A per-repo session reads `spec.md`, `status.md`, `decisions.md`, and `validation.md` first, does the repo-local work, and writes results back. The protocol is compatible with this pattern; it simply does not schedule it, and multi-agent orchestration is deferred beyond the MVP. When repos run under `bin/scenario-harness run`, each per-repo session must also end by writing a structured verdict file (`tasks/<task>/verdicts/<repo>.md`); a missing, malformed, or self-reported-blocked verdict blocks the run.
 
 ## Relationship To Repo-Local Spec Frameworks
 
@@ -334,7 +334,9 @@ bin/scenario-harness run billing-contract-change \
 start unless both gates are recorded, walks repositories in scenario order,
 checks the branch gate, renders the repo prompt from scenario data, spawns the
 agent backend (`claude-code`, `codex`, or experimental `gemini`) in the
-repository directory as its own process group, runs the repo checks itself
+repository directory as its own process group, parses each repo's delivery
+verdict file (`tasks/<task>/verdicts/<repo>.md`; missing, malformed, or
+self-reported-blocked verdicts block the run), runs the repo checks itself
 after the agent exits, and stops at the first failure with a stage × category
 classification written to the task files. Raw agent output lands in
 `tasks/<task>/logs/<repo>.log`; a `.run.lock` keeps runs single-writer; a

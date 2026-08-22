@@ -57,6 +57,21 @@ MOCK_AGENT = textwrap.dedent(
     if task_dir:
         with open(os.path.join(task_dir, "validation.md"), "a", encoding="utf-8") as handle:
             handle.write("\\nmock-child: appended task-file update\\n")
+        if mode != "no-verdict":
+            verdict = "verdict: ok\\nblocker: none\\nresidual_risk: none\\n"
+            if mode == "blocked":
+                verdict = (
+                    "verdict: blocked\\n"
+                    "blocker: mock blocker: upstream contract mismatch\\n"
+                    "residual_risk: none\\n"
+                )
+            elif mode == "bad-verdict":
+                verdict = "verdict: yes\\nblocker: none\\nresidual_risk: none\\n"
+            verdicts_dir = os.path.join(task_dir, "verdicts")
+            os.makedirs(verdicts_dir, exist_ok=True)
+            verdict_path = os.path.join(verdicts_dir, os.path.basename(os.getcwd()) + ".md")
+            with open(verdict_path, "w", encoding="utf-8") as handle:
+                handle.write(verdict)
     print(json.dumps({"type": "result", "subtype": "success"}))
     sys.exit(0)
     '''
@@ -277,7 +292,10 @@ def test_dry_run_real_scenario():
         assert ".trellis/workflow.md" in out
         assert "openapi.yaml" in out
         assert '"claude"' in out and "--output-format" in out
+        assert "--settings" in out  # claude argv carries the tool-search override
         assert "Do NOT run git commit" in out
+        assert "verdicts/contract-repo.md" in out
+        assert "verdict: ok" in out and "residual_risk:" in out
 
 
 @case("run refuses when the Planning Gate is missing")
@@ -314,11 +332,12 @@ def test_success_path():
         for repo in ("alpha", "beta"):
             assert (root / "repos" / repo / "done-marker.txt").exists()
             assert (task_dir / "logs" / f"{repo}.log").exists()
+            assert (task_dir / "verdicts" / f"{repo}.md").exists()
         status_text = (task_dir / "status.md").read_text(encoding="utf-8")
         validation_text = (task_dir / "validation.md").read_text(encoding="utf-8")
         assert "Recommended current step: `complete`" in status_text, status_text[-800:]
-        assert "| alpha | pass | success | pass | complete |" in status_text
-        assert "| beta | pass | success | pass | complete |" in status_text
+        assert "| alpha | pass | success | ok | pass | complete |" in status_text
+        assert "| beta | pass | success | ok | pass | complete |" in status_text
         assert "mock-child: appended task-file update" in validation_text
         assert "run-validation" in validation_text
         assert not (task_dir / ".run.lock").exists()
@@ -462,6 +481,72 @@ def test_single_repo_mode():
         result = run_cli(root, ["run", "mock", "--task", "mock-task", "--repo", "alpha"])
         assert result.returncode == 2
         assert "spec review" in result.stderr.lower()
+
+
+@case("missing verdict file blocks the run (fail-closed)")
+def test_verdict_missing():
+    with tempfile.TemporaryDirectory() as raw:
+        root = make_harness_root(Path(raw))
+        task_dir = make_task(root)
+        set_mode(root, "alpha", "no-verdict")
+        result = run_cli(root, ["run", "mock", "--task", "mock-task"])
+        assert result.returncode == 2, result.stdout
+        assert "stage=agent" in result.stderr and "verdict_missing" in result.stderr
+        status_text = (task_dir / "status.md").read_text(encoding="utf-8")
+        assert "| alpha | pass | verdict_missing | missing | - | blocked |" in status_text
+        assert not (root / "repos" / "beta" / "done-marker.txt").exists()
+        assert not (task_dir / ".run.lock").exists()
+
+
+@case("self-reported blocked verdict blocks the run before checks")
+def test_verdict_blocked():
+    with tempfile.TemporaryDirectory() as raw:
+        # checks are rigged to fail; reaching check_failed would prove checks ran
+        root = make_harness_root(Path(raw), checks_override="exit 1")
+        task_dir = make_task(root)
+        set_mode(root, "alpha", "blocked")
+        result = run_cli(root, ["run", "mock", "--task", "mock-task"])
+        assert result.returncode == 2, result.stdout
+        assert "stage=agent" in result.stderr and "agent_report_blocked" in result.stderr
+        assert "mock blocker: upstream contract mismatch" in result.stderr
+        validation_text = (task_dir / "validation.md").read_text(encoding="utf-8")
+        assert "`agent` x category `agent_report_blocked`" in validation_text
+        assert "mock blocker: upstream contract mismatch" in validation_text
+        assert not (root / "repos" / "beta" / "done-marker.txt").exists()
+        assert not (task_dir / ".run.lock").exists()
+
+
+@case("malformed verdict file blocks the run")
+def test_verdict_invalid():
+    with tempfile.TemporaryDirectory() as raw:
+        root = make_harness_root(Path(raw))
+        task_dir = make_task(root)
+        set_mode(root, "alpha", "bad-verdict")
+        result = run_cli(root, ["run", "mock", "--task", "mock-task"])
+        assert result.returncode == 2, result.stdout
+        assert "stage=agent" in result.stderr and "verdict_invalid" in result.stderr
+        assert not (root / "repos" / "beta" / "done-marker.txt").exists()
+
+
+@case("stale verdicts from an earlier run are reset before spawn")
+def test_verdict_stale_reset():
+    with tempfile.TemporaryDirectory() as raw:
+        root = make_harness_root(Path(raw))
+        task_dir = make_task(root)
+        verdicts = task_dir / "verdicts"
+        verdicts.mkdir()
+        (verdicts / "alpha.md").write_text(
+            "verdict: ok\nblocker: none\nresidual_risk: none\n", encoding="utf-8"
+        )
+        set_mode(root, "alpha", "no-verdict")
+        result = run_cli(root, ["run", "mock", "--task", "mock-task"])
+        assert result.returncode == 2, result.stdout
+        assert "verdict_missing" in result.stderr
+
+        set_mode(root, "alpha", None)
+        result = run_cli(root, ["run", "mock", "--task", "mock-task"])
+        assert result.returncode == 0, result.stderr
+        assert (root / "repos" / "beta" / "done-marker.txt").exists()
 
 
 def main() -> int:

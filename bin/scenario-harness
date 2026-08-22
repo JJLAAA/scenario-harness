@@ -740,7 +740,8 @@ def read_task_branches(task_dir: Path) -> dict[str, str]:
     if not status_file.exists():
         return {}
     branches: dict[str, str] = {}
-    for line in status_file.read_text(encoding="utf-8").splitlines():
+    text = strip_marked_blocks(status_file.read_text(encoding="utf-8"))
+    for line in text.splitlines():
         if not line.startswith("|") or "---" in line or "Repo" in line:
             continue
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
@@ -760,6 +761,23 @@ def resolve_task_dir(root: Path, raw_task: str) -> Path:
     if len(path.parts) == 1:
         return root / "tasks" / raw_task
     return (root / path).resolve()
+
+
+MARKED_BLOCK_RE = re.compile(
+    r"<!-- scenario-harness:[a-z0-9-]+:start -->.*?"
+    r"<!-- scenario-harness:[a-z0-9-]+:end -->\n?",
+    flags=re.S,
+)
+
+
+def strip_marked_blocks(text: str) -> str:
+    """Drop runner-managed marked blocks so table scans only see authored content.
+
+    Run reports upserted into task files contain their own tables; without this,
+    scans like read_task_branches would read derived report cells as task data.
+    """
+
+    return MARKED_BLOCK_RE.sub("", text)
 
 
 def upsert_marked_block(path: Path, marker: str, content: str) -> None:
@@ -1892,6 +1910,73 @@ def classify_stderr_signatures(stderr_text: str) -> tuple[str, str] | None:
     return None
 
 
+VERDICT_KEYS = ("verdict", "blocker", "residual_risk")
+VERDICT_VALUES = ("ok", "blocked")
+VERDICT_LINE_RE = re.compile(r"^(verdict|blocker|residual_risk):\s*(.*)$")
+
+
+@dataclass
+class AgentVerdict:
+    verdict: str
+    blocker: str
+    residual_risk: str
+
+
+def verdict_file_path(task_dir: Path, repo_key: str) -> Path:
+    return task_dir / "verdicts" / f"{repo_key}.md"
+
+
+def parse_verdict_file(path: Path) -> tuple[str, AgentVerdict | None, str | None]:
+    """Parse tasks/<task>/verdicts/<repo>.md under a fail-closed contract.
+
+    Returns (status, verdict, reason). status is "missing", "invalid", "ok", or
+    "blocked". Anything that is not exactly the three declared keys with a valid
+    verdict value is invalid; a blocked verdict additionally requires a
+    non-empty blocker line.
+    """
+
+    if not path.is_file():
+        return "missing", None, None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return "invalid", None, f"verdict file is unreadable: {exc}"
+    values: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = VERDICT_LINE_RE.match(line)
+        if match is None:
+            return "invalid", None, f"unexpected line: {line!r}"
+        key, value = match.group(1), match.group(2).strip()
+        if key in values:
+            return "invalid", None, f"duplicate key: {key}"
+        values[key] = value
+    missing_keys = [key for key in VERDICT_KEYS if key not in values]
+    if missing_keys:
+        return "invalid", None, f"missing key(s): {', '.join(missing_keys)}"
+    verdict_value = values["verdict"]
+    if verdict_value not in VERDICT_VALUES:
+        return (
+            "invalid",
+            None,
+            f"verdict value must be one of {'/'.join(VERDICT_VALUES)}, "
+            f"got {verdict_value!r}",
+        )
+    if verdict_value == "blocked" and not values["blocker"]:
+        return "invalid", None, "a blocked verdict requires a non-empty blocker line"
+    return (
+        verdict_value,
+        AgentVerdict(
+            verdict=verdict_value,
+            blocker=values["blocker"],
+            residual_risk=values["residual_risk"],
+        ),
+        None,
+    )
+
+
 def terminate_process_tree(process: subprocess.Popen, grace_seconds: float) -> None:
     """POSIX termination ladder: SIGTERM to the group, grace, then SIGKILL.
 
@@ -1997,12 +2082,33 @@ def spawn_agent(
 
 
 def provider_argv(
-    agent: str, permission: str, prompt: str
+    agent: str, permission: str, prompt: str, task_dir: Path | None = None
 ) -> list[str]:
     executable = AGENT_PROVIDERS[agent]
     flags = PERMISSION_FLAGS[agent][permission]
     if agent == "claude-code":
-        return [executable, "-p", prompt, "--output-format", "json", *flags]
+        # Two injections restore a working sandboxed session:
+        # 1. Tool search defers local tools (Bash/Read/Write) behind a
+        #    ToolSearch registry; on Anthropic-compatible third-party endpoints
+        #    the deferred tools never surface, leaving headless sessions
+        #    toolless (they still exit 0). --settings overrides the user's
+        #    settings.json env block, restoring the classic eager tool surface.
+        # 2. The task directory lives outside the repo cwd; without --add-dir
+        #    every access path to it (Read/Bash/Write) is permission-denied,
+        #    so verdicts and task-file updates cannot be written.
+        # See docs/real-backend-acceptance.md (round 2, W1/W1B/E1/E2 evidence).
+        argv = [
+            executable,
+            "-p",
+            prompt,
+            "--output-format",
+            "json",
+            "--settings",
+            json.dumps({"env": {"ENABLE_TOOL_SEARCH": "0"}}),
+        ]
+        if task_dir is not None:
+            argv += ["--add-dir", str(task_dir)]
+        return [*argv, *flags]
     if agent == "codex":
         return [executable, "exec", "--json", *flags, prompt]
     return [executable, "-p", prompt, *flags]
@@ -2068,23 +2174,33 @@ Follow this order and stop before editing if any step fails:
    - append implementation notes to `{task_dir / "spec.md"}` if the plan deepened
    - set per-repo status in `{task_dir / "status.md"}`
    - record deviations in `{task_dir / "decisions.md"}`
-6. Do NOT run git commit, push, branch creation, or checkout. Do not modify git state.
+6. Write your delivery verdict to `{verdict_file_path(task_dir, repo["key"])}` (create
+   the `verdicts` directory if needed) with exactly these three lines and nothing else:
+   verdict: ok
+   blocker: <one line, "none" when you are not blocked>
+   residual_risk: <one line, "none" when there is none>
+   Use `verdict: blocked` with a non-empty blocker line when the repo-local change is
+   not fully implemented. The runner reads this file after you exit: a missing or
+   malformed file, or a blocked verdict, blocks the run even when you exit 0.
+7. Do NOT run git commit, push, branch creation, or checkout. Do not modify git state.
 
-The coordinating runner will run the repo checks itself after you exit:
+The coordinating runner will read your verdict file and run the repo checks itself
+after you exit:
 {markdown_list(checks, "   (none declared)")}
 
-Harness protocol reference: `{root / "AGENTS.md"}`. Exit 0 only when the repo-local
-change is implemented and task files are updated."""
+Harness protocol reference: `{root / "AGENTS.md"}`. Exit 0 with verdict `ok` only
+when the repo-local change is implemented and task files are updated."""
 
 
 def render_run_status(report: dict[str, Any]) -> str:
     rows = []
     for repo in report["repos"]:
         rows.append(
-            "| {key} | {branch} | {agent} | {checks} | {result} |".format(
+            "| {key} | {branch} | {agent} | {verdict} | {checks} | {result} |".format(
                 key=repo["key"],
                 branch=repo.get("branch_gate") or "-",
                 agent=repo.get("agent_result") or "-",
+                verdict=repo.get("verdict") or "-",
                 checks=repo.get("checks_result") or "-",
                 result=repo.get("result") or "-",
             )
@@ -2104,9 +2220,9 @@ Runner: `{report["agent_backend"]}` (permission preset `{report["permission"]}`)
 
 Gates: planning `{report["gates"]["planning_gate"]}`, spec review `{report["gates"]["spec_review_gate"]}`
 
-| Repo | Branch Gate | Agent | Checks | Result |
-| --- | --- | --- | --- | --- |
-{chr(10).join(rows) if rows else "| - | - | - | - | - |"}
+| Repo | Branch Gate | Agent | Verdict | Checks | Result |
+| --- | --- | --- | --- | --- | --- |
+{chr(10).join(rows) if rows else "| - | - | - | - | - | - |"}
 
 Recommended current step: `{report["recommended_step"]}`
 
@@ -2121,10 +2237,11 @@ def render_run_validation(report: dict[str, Any]) -> str:
     for repo in report["repos"]:
         outcome = repo.get("agent_outcome") or {}
         rows.append(
-            "| {key} | `{agent}` | `{log}` | exit={exit_code} timeout={timeout} | {result} |".format(
+            "| {key} | `{agent}` | `{log}` | {verdict} | exit={exit_code} timeout={timeout} | {result} |".format(
                 key=repo["key"],
                 agent=report["agent_backend"],
                 log=repo.get("log_path") or "-",
+                verdict=repo.get("verdict") or "-",
                 exit_code=outcome.get("exit_code"),
                 timeout=outcome.get("timed_out"),
                 result=repo.get("result") or "-",
@@ -2141,9 +2258,9 @@ def render_run_validation(report: dict[str, Any]) -> str:
 
 Generated: `{report["generated_at"]}`
 
-| Repo | Backend | Log | Agent Outcome | Result |
-| --- | --- | --- | --- | --- |
-{chr(10).join(rows) if rows else "| - | - | - | - | - |"}
+| Repo | Backend | Log | Verdict | Agent Outcome | Result |
+| --- | --- | --- | --- | --- | --- |
+{chr(10).join(rows) if rows else "| - | - | - | - | - | - |"}
 
 Failure classification:
 
@@ -2243,7 +2360,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             prompt = render_agent_prompt(
                 context, repo, task_dir, expected_branches.get(repo["key"]), root
             )
-            argv = provider_argv(args.agent, args.permission, prompt)
+            argv = provider_argv(args.agent, args.permission, prompt, task_dir)
             report["repos"].append(
                 {
                     "key": repo["key"],
@@ -2318,9 +2435,17 @@ def cmd_run(args: argparse.Namespace) -> int:
             prompt = render_agent_prompt(
                 context, repo, task_dir, expected_branches.get(repo_key), root
             )
-            argv = provider_argv(args.agent, args.permission, prompt)
+            argv = provider_argv(args.agent, args.permission, prompt, task_dir)
             log_path = task_dir / "logs" / f"{repo_key}.log"
             entry["log_path"] = str(log_path)
+
+            repo_verdict_file = verdict_file_path(task_dir, repo_key)
+            # Fail-closed across retries: a verdict left over from an earlier run
+            # must not satisfy this run's gate.
+            try:
+                repo_verdict_file.unlink(missing_ok=True)
+            except OSError:
+                pass
 
             outcome = spawn_agent(
                 argv,
@@ -2370,6 +2495,48 @@ def cmd_run(args: argparse.Namespace) -> int:
                 entry["result"] = "blocked"
                 return fail("agent", category, message, repo_key)
             entry["agent_result"] = "success"
+
+            verdict_status, verdict, verdict_reason = parse_verdict_file(
+                repo_verdict_file
+            )
+            entry["verdict"] = verdict_status
+            if verdict_status == "missing":
+                entry["agent_result"] = "verdict_missing"
+                entry["result"] = "blocked"
+                return fail(
+                    "agent",
+                    "verdict_missing",
+                    f"Agent for '{repo_key}' exited 0 but wrote no verdict file at "
+                    f"`{repo_verdict_file}`. A missing verdict counts as failure.",
+                    repo_key,
+                )
+            if verdict_status == "invalid":
+                entry["agent_result"] = "verdict_invalid"
+                entry["result"] = "blocked"
+                return fail(
+                    "agent",
+                    "verdict_invalid",
+                    f"Verdict file for '{repo_key}' is malformed: {verdict_reason}",
+                    repo_key,
+                )
+            if verdict_status == "blocked":
+                entry["agent_result"] = "agent_report_blocked"
+                entry["result"] = "blocked"
+                residual = (
+                    verdict.residual_risk
+                    if verdict and verdict.residual_risk
+                    and verdict.residual_risk != "none"
+                    else None
+                )
+                return fail(
+                    "agent",
+                    "agent_report_blocked",
+                    f"Agent for '{repo_key}' self-reported a blocked verdict: "
+                    f"{verdict.blocker if verdict else '-'}"
+                    + (f" (residual risk: {residual})" if residual else "")
+                    + ". Checks are skipped for a self-reported blocked verdict.",
+                    repo_key,
+                )
 
             checks_report = run_checks(
                 check_matrix(root, args.scenario, repo_key), args.check_timeout

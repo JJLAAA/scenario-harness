@@ -23,8 +23,9 @@
 - runner 读取 `scenario.yaml`（order、checks）与 task files（分支、门禁），每仓渲染一份
   prompt，以仓库为 cwd 拉起后端，随后亲自执行仓库 checks 并据此门禁。
 - 智能放在每个仓库的子 Agent 会话内部；协调是代码。
-- 交接介质是 task files（`spec.md`、`status.md`、`decisions.md`、`validation.md`）
-  加上原始日志 `tasks/<task>/logs/<repo>.log`。
+- 交接介质是 task files（`spec.md`、`status.md`、`decisions.md`、`validation.md`）、
+  每仓 verdict 文件（`tasks/<task>/verdicts/<repo>.md`），加上原始日志
+  `tasks/<task>/logs/<repo>.log`。
 
 ## 每仓执行循环
 
@@ -40,13 +41,51 @@
    子 Agent 核对分支、按序读取 `instruction_sources`、检视 `key_files`、按 `spec.md`
    实现、更新 task files、绝不 commit。
 4. **Spawn**：后端以独立会话（`start_new_session=True`）运行，cwd 为仓库目录，env 使用
-   显式 overlay。
-5. **Checks**：子 Agent 退出后由 runner——而非子 Agent——执行 `repos.<repo>.checks`。
+   显式 overlay。claude-code 后端额外注入两项：`--settings` 关闭 ToolSearch（该实验特性把
+   本地工具 defer 到注册表后，第三方 Anthropic 兼容端点唤不出，会话会"无工具但 exit 0"），
+   以及 `--add-dir <task_dir>`（task 目录在 cwd 外，否则允许目录策略拒绝一切 task-file 写入，
+   verdict 无法落盘）。spawn 之前 runner 先删除该仓的旧 verdict 文件——上一轮 run 留下的判决
+   不能满足本轮门禁（fail-closed across retries）。
+5. **Verdict 门禁**：子 Agent 退出且协议层严格成功（exit 0、无 `error_*` subtype）后，
+   runner 解析 `tasks/<task>/verdicts/<repo>.md`：缺失 → `verdict_missing`；格式非法 →
+   `verdict_invalid`；自报 `blocked` → `agent_report_blocked`（跳过 checks）。三者都阻断
+   run；只有 `verdict: ok` 才进入 checks。契约细节见下节。
+6. **Checks**：子 Agent 退出后由 runner——而非子 Agent——执行 `repos.<repo>.checks`。
    从不信任自我报告的成功。
-6. **门禁**：Agent 严格成功 + 全部 checks 通过 → 下一仓库；否则 run 以 `blocked` 停止，
-   失败记录写入 task files。
+7. **门禁**：Agent 严格成功 + verdict ok + 全部 checks 通过 → 下一仓库；否则 run 以
+   `blocked` 停止，失败记录写入 task files。
 
 `--dry-run` 只渲染 prompt 与 argv（不做门禁、不加锁、不 spawn）。
+
+## Agent Verdict 契约
+
+动机：prompt 尾部 "Exit 0 only when ..." 的约束是荣誉制，runner 无法验证。若子 Agent
+实际未完成、只在自然语言里说明剩余风险、同时以 0 退出，而 scenario checks 又较弱或未
+声明，仓库会被误标 `complete`。verdict 契约把"任务语义完成"的自报从自由文本收敛为
+机器可判定的固定格式，同时坚持信任不对称：
+
+- **负向自报可信**：`verdict: blocked` 直接阻断 run，checks 跳过——结果已定；
+- **正向自报不可信**：`verdict: ok` 只是进入 checks 的门票，语义验证仍由 runner 亲自
+  执行 checks 完成。
+
+载体刻意选为每仓独立文件 `tasks/<task>/verdicts/<repo>.md`（不用 status.md 标记块，
+也不用 stdout 解析）：存在性检查即 fail-closed 信号，不与 `status.md` 的多写者角色
+混杂，并与 `logs/<repo>.log` 的每仓隔离模式一致。文件恰好三行键值、不得有其他内容：
+
+```
+verdict: ok
+blocker: none
+residual_risk: none
+```
+
+- `verdict` 只允许 `ok` / `blocked`；
+- `verdict: blocked` 时 `blocker` 必须非空，其文本进入失败消息与 `run-status` /
+  `run-validation` 标记块；
+- 其余任何键、多余行、重复键、缺失键都判 `verdict_invalid`。
+
+优先级（机器信号优先于自报）：非零退出 / 超时 / `invalid_success` 走既有类目，不读
+verdict 文件；exit 0 之后才解析 verdict。生效方式：无条件启用，无开关——仓库完成需要
+exit 0、有效 `ok` verdict、checks 通过三者齐备。
 
 ## 借鉴自 dsh rc.8 的机制
 
@@ -80,7 +119,8 @@ JSON-RPC 协议并维护版本锁定的 wire 适配器（`wire.ts`，"app-server
 Stage：`gates`、`preflight`、`agent`、`checks`。
 Category 包括：`planning_gate_missing`、`spec_review_gate_missing`、
 `branch_fail`/`branch_not_configured`、`nonzero_exit`、`signal`、`timeout`、
-`invalid_success`、`permission_denied`、`sandbox_violation`、`check_failed`、
+`invalid_success`、`verdict_missing`、`verdict_invalid`、`agent_report_blocked`、
+`permission_denied`、`sandbox_violation`、`check_failed`、
 `check_timeout`。
 
 每个失败写入 `validation.md`（标记块 `run-validation`）与 `status.md`（标记块
@@ -92,6 +132,9 @@ spawn 或非 POSIX 平台错误。
 
 - **单写者**：`tasks/<task>/.run.lock`（O_CREAT|O_EXCL，记录 pid；pid 已死的陈锁会被回收）。
 - **不改 git 状态**：runner 与子 Agent prompt 都禁止 commit、push、checkout 和建分支。
+- **Verdict fail-closed**：仓库完成需要 exit 0 + 有效 `ok` verdict + checks 通过三者
+  齐备；verdict 缺失、格式非法或自报 blocked 一律阻断，且 runner 在 spawn 前清除上一轮
+  的旧 verdict，防止重跑时旧判决蒙混过关。
 - **checks 归 runner**：机器验证，绝不采用 Agent 自报。
 - **恢复介质**：只有 task files；恢复即重跑 `run`，它不自动跳过任何东西——每次都重新
   核对门禁、分支与锁。
@@ -132,5 +175,8 @@ subagent 驱动、app-server wire 适配器。那些服务于完整的 Agent 宿
 ## 状态
 
 已在 `bin/scenario-harness run` 实现；由 `tests/run_mock_e2e.py` 自测（mock 后端、
-临时仓库、零外部副作用）。在真实业务仓库上用真实 Agent 验收属于用户驱动的步骤，
-在自动化测试之外。
+临时仓库、零外部副作用；覆盖 verdict ok / missing / blocked / invalid 四类路径与
+重跑前清除旧 verdict 的恢复语义）。真实后端（claude-code、codex）的沙箱验收已完成，
+含 verdict 三路径、权限预设行为与多仓顺序的证据与残余风险，见
+`docs/real-backend-acceptance.md`；真实业务仓库上的运行仍属用户驱动步骤，在自动化
+测试之外。
