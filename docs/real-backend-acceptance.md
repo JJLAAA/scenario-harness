@@ -190,3 +190,26 @@ mock e2e 15/15 全绿（含 `--settings` 注入断言）。
   消除；bypass 模式下的偶发剥空预计同根因（待后续真实 run 观察，若复现再查）。
 - 独立事实不变：codex `read-only` 在 0.149.0 上不约束写入（P2），升级后复测；
   verdict 门禁的价值进一步实证——W1B 中 agent 连自报 blocked 的 Write 都被拒时，门禁仍拦下了这个"半成品会话"。
+
+## 第三轮补测：codex 非 /tmp 任务目录（跟进项 #1）
+
+日期：2026-08-22（同日）｜ 沙箱根：`~/Projects/.rfa-codex-w`（已清理）｜ API 会话 1 次
+
+**问题**：W2 通过时任务目录位于 `/tmp`，codex 对其放行可能是位置巧合；真实 harness 的
+任务目录在仓库外且不在 `/tmp`，`workspace-write` 预设是否放行未验证。
+
+**结果（C1）**：codex `workspace-write` + 非 `/tmp` 任务目录**完全通过**——exit 0、三键
+ok verdict 写入任务目录、`feature.txt` 内容精确、无 commit。
+
+**解读**：结合 P2（`read-only` 未阻止写入）与本轮日志（零沙箱事件痕迹），最自洽的解释是
+**codex 0.149.0 在本机上沙箱整体未执行写入约束**，而非 `workspace-write` 按设计放行任务
+目录。因此：
+
+- 无需为 codex 注入 `writable_roots`（C2 不触发，零代码改动）；
+- 该结论是**版本相关行为**：若未来 codex 升级后沙箱开始强制执行（TF1 复测时观察），
+  `workspace-write` 将按设计只放行 cwd，届时需为 workspace 预设补
+  `-c sandbox_workspace_write.writable_roots=<task_dir>` 注入——claude 的 `--add-dir`
+  已就位，codex 侧届时照搬同一模式即可。
+
+风险登记更新：codex 相关风险合并为一条——"codex 0.149.0 沙箱不执行写入约束（P2/C1）；
+升级后需复测，若开始强制则补 writable_roots 注入"。

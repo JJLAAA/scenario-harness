@@ -44,8 +44,11 @@
    显式 overlay。claude-code 后端额外注入两项：`--settings` 关闭 ToolSearch（该实验特性把
    本地工具 defer 到注册表后，第三方 Anthropic 兼容端点唤不出，会话会"无工具但 exit 0"），
    以及 `--add-dir <task_dir>`（task 目录在 cwd 外，否则允许目录策略拒绝一切 task-file 写入，
-   verdict 无法落盘）。spawn 之前 runner 先删除该仓的旧 verdict 文件——上一轮 run 留下的判决
-   不能满足本轮门禁（fail-closed across retries）。
+   verdict 无法落盘）。codex 侧暂无等价注入：0.149.0 的沙箱在本机不执行写入约束
+   （read-only 与 workspace-write 均实测放行，见 `docs/real-backend-acceptance.md`）；若未来
+   版本开始强制执行，需为 workspace 预设补 `writable_roots` 注入。spawn 之前 runner 先删除
+该仓的旧 verdict 文件——上一轮 run 留下的判决不能满足本轮门禁（fail-closed across
+retries）。
 5. **Verdict 门禁**：子 Agent 退出且协议层严格成功（exit 0、无 `error_*` subtype）后，
    runner 解析 `tasks/<task>/verdicts/<repo>.md`：缺失 → `verdict_missing`；格式非法 →
    `verdict_invalid`；自报 `blocked` → `agent_report_blocked`（跳过 checks）。三者都阻断
