@@ -24,6 +24,50 @@ The business change still has one logical shape even when the code lives in sepa
 
 Scenario Harness provides that missing scenario layer. It keeps the repositories independent while giving coding agents a minimal, explicit protocol for coordinated cross-repo development.
 
+## Knowledge Model
+
+The harness splits the knowledge a cross-repo delivery needs into three layers, each with a distinct owner and lifecycle:
+
+1. **Scenario definition — static, owned by this harness.** `scenarios/<scenario>/scenario.yaml` plus the scenario `README.md`. This is the coordination knowledge for one recurring class of task: which repositories participate, what order they change in, how they depend on each other, which repo-local instruction sources must be read, which key files matter, and which checks prove completion. It is authored once per scenario class and reused across every task.
+2. **Repo-local knowledge — static, owned by each business repo.** The files that `instruction_sources` points to (`AGENTS.md`, `CLAUDE.md`, `.trellis/workflow.md`, `CONTRIBUTING.md`, and similar), plus the contracts and code under `key_files`. This is the "how to work inside this repo" knowledge. It exists before any scenario run; the scenario only references it.
+3. **Task records — dynamic, generated per execution.** `tasks/<task>/spec.md`, `status.md`, `decisions.md`, and `validation.md`. `init-task` scaffolds them from templates and the scenario configuration; the executing agent enriches and updates them during planning, implementation, and validation. They are also the recovery point when a session is interrupted.
+
+`scenario.yaml` is the glue between the two static layers: it binds harness-owned coordination knowledge to repo-owned local knowledge by pointing at instruction sources and key files inside each business repository.
+
+Only the task layer is generated at runtime, and the flow is one-directional: repo-local instructions are read as inputs, and what the agent learns from them is condensed into the cross-repo task spec. The harness never generates, rewrites, or writes back repo-local specs.
+
+The knowledge placement is coupled with an execution protocol: planning and spec review gates, a fixed status vocabulary, check failure handling, interruption safety, and the helper CLI. The scenario concept answers *where the knowledge lives*; the protocol answers *how execution stays safe and resumable*. Together they turn "how should this class of cross-repo delivery be coordinated" from something an agent rediscovers on every run into explicit, pre-authored, protocol-driven knowledge.
+
+## Declarative Coordination
+
+The harness is declarative by choice: it favors pre-authored protocols over agent exploration. `instruction_sources` and `key_files` are not an exhaustive map of repo knowledge. They are a guaranteed minimum reading list — a floor, not a ceiling:
+
+- The lists name pointers, not content. Style guides, workflow rules, and domain knowledge stay inside each business repo, maintained by its owners.
+- The agent remains free to explore beyond the list; nothing in the protocol forbids reading additional files, and implementation naturally requires it.
+- Declared files that do not exist are skipped and recorded. Repos without scenario-declared sources fall back to common project files such as `README.md`, `CONTRIBUTING.md`, `package.json`, and `Makefile`.
+
+The restriction buys what free exploration cannot:
+
+1. **Determinism.** The same guaranteed context on every run is a prerequisite for repeatable cross-repo delivery.
+2. **Context economy.** Cross-repo tasks already carry coordination overhead; declared entry points keep per-repo discovery cost constant instead of unbounded.
+3. **Verifiability.** Only declared files can be preflighted for existence and audited for skips.
+4. **Protection of load-bearing files.** Missing a contract or schema file is catastrophic downstream; missing a style nuance is usually caught by checks. Scenario authors spend their judgment on the files that must never be missed.
+
+Code style shows the split clearly: stylistic correctness is not trusted to the agent having read the guide — it is enforced by the repo's own `checks` (lint, typecheck, tests). Whatever must be deterministic is declared; whatever tolerates fuzziness is left to exploration.
+
+In short: everything declared is machine-verifiable — `validate-scenario` validates structure, `preflight` validates branches and file existence, `checks` validates conventions, task files validate recoverability — and everything undeclared depends on agent capability. Agent freedom is not removed but reallocated: exploration stays where it is cheapest and errors are most likely to be caught by checks (in-repo implementation), while the layer where exploration is most expensive and errors most damaging (cross-repo order, dependency direction, contract entry points) is fully declared.
+
+The cost is curation. Instruction and key-file lists are human-maintained and can go stale when a repo adopts conventions the scenario does not yet reference. Fallback discovery softens this but does not remove it; the maintenance burden falls on scenario authors, and what it purchases is determinism on every execution.
+
+## Single-Session Limits And Per-Repo Sessions
+
+The default execution model — one agent session running the scenario serially — has two honest limits:
+
+1. **Cross-repo context contamination is mitigated, not eliminated.** The protocol firewalls (branch check before reading repo context, re-reading instruction sources on every repo entry, never applying one repo's instructions to another) are behavioral discipline, not runtime isolation. Conversation history still carries traces of earlier repos, and compaction summaries blur repo boundaries further. The per-repo summaries required by the execution model bound what carries forward, but a single session cannot guarantee isolation.
+2. **Repo-local runtime mechanisms do not activate.** As noted in "Relationship To Repo-Local Spec Frameworks", hooks, skills, slash commands, and MCP injection bind to project configuration discovered at session start. An agent started in the harness directory that later enters a business repo does not re-trigger that discovery, so single-repo runtime support is absent and compliance runs at the document level.
+
+The structural fix for both limits is the same: run each repository in a fresh agent session started inside that repository, where its runtime mechanisms activate normally. Task files make this possible without orchestration, because they are session-external memory. A per-repo session reads `spec.md`, `status.md`, `decisions.md`, and `validation.md` first, does the repo-local work, and writes results back. The protocol is compatible with this pattern; it simply does not schedule it, and multi-agent orchestration is deferred beyond the MVP.
+
 ## Relationship To Repo-Local Spec Frameworks
 
 Scenario Harness deliberately does not compete with single-repo or monorepo spec frameworks such as Spec Kit, OpenSpec, Trellis, or repo-specific agent workflows. It operates above them.
@@ -275,9 +319,36 @@ Read the task files first, then resume from the next incomplete step.
 Do not commit unless I explicitly ask.
 ```
 
+### 5. Execute With Per-Repo Subprocess Agents
+
+Once the Planning Gate and Spec Review Gate are recorded in `status.md`, the
+helper CLI can drive the implementation pass itself:
+
+```bash
+bin/scenario-harness run billing-contract-change \
+  --task 2026-05-20-billing-contract-change \
+  --agent claude-code
+```
+
+`run` is a deterministic runner, not an orchestrating model: it refuses to
+start unless both gates are recorded, walks repositories in scenario order,
+checks the branch gate, renders the repo prompt from scenario data, spawns the
+agent backend (`claude-code`, `codex`, or experimental `gemini`) in the
+repository directory as its own process group, runs the repo checks itself
+after the agent exits, and stops at the first failure with a stage × category
+classification written to the task files. Raw agent output lands in
+`tasks/<task>/logs/<repo>.log`; a `.run.lock` keeps runs single-writer; a
+termination ladder (SIGTERM → grace → SIGKILL to the process group) enforces
+`--timeout` (default 1800s per repo). `--dry-run` renders prompts only.
+
+Design rationale, the borrowed-from-deepseek-harness mechanisms, and the
+transport choice (public headless CLIs instead of SDK/app-server) are in
+[`docs/subprocess-agent-run.md`](docs/subprocess-agent-run.md); the mock
+self-test is `tests/run_mock_e2e.py`.
+
 ### 3. Execution Model
 
-The default execution model is a single agent running the scenario serially. Do not introduce multi-agent scheduling in the MVP workflow.
+The default execution model is a single agent running the scenario serially. Do not introduce multi-agent scheduling in the MVP workflow. For the honest limits of this model and a compatible per-repo session pattern, see "Single-Session Limits And Per-Repo Sessions".
 
 The scenario should be narrow enough that the agent can follow configured repos, checks, and scenario invariants without broad discovery across every repository. Put the required knowledge in `scenario.yaml`, the scenario README, and task files instead of relying on the agent to infer cross-repo behavior.
 

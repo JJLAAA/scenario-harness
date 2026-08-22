@@ -24,6 +24,50 @@ Coding agent 越来越依赖 spec、指令和执行协议来可靠地完成代�
 
 Scenario Harness 补的就是这一层 scenario-level 协议。它不强行合并 repo，而是在保持各仓库独立的前提下，为 coding agent 提供一个最小但明确的跨 repo 协同开发流程。
 
+## 知识模型
+
+harness 把一次跨仓交付所需的知识分成三层，各有明确的归属和生命周期：
+
+1. **场景定义——静态，本 harness 拥有。** `scenarios/<scenario>/scenario.yaml` 和场景 `README.md`。这是某一类重复任务的协调知识：哪些仓库参与、按什么顺序修改、彼此依赖什么、必须读哪些仓库本地指令、看哪些关键文件、用什么检查证明完成。每类场景编写一次，之后所有任务复用。
+2. **仓库本地知识——静态，各业务仓库拥有。** `instruction_sources` 指向的文件（`AGENTS.md`、`CLAUDE.md`、`.trellis/workflow.md`、`CONTRIBUTING.md` 等），以及 `key_files` 圈定的契约和代码。这是"在这个仓库里怎么干活"的知识，在任何场景执行之前就已存在，场景只是引用它们。
+3. **任务记录——动态，每次执行时生成。** `tasks/<task>/` 下的 `spec.md`、`status.md`、`decisions.md`、`validation.md`。`init-task` 从模板和场景配置机械生成骨架，执行 Agent 在规划、实现、验证过程中充实和更新它们。它们同时也是会话中断时的恢复点。
+
+`scenario.yaml` 是两个静态层之间的胶水：它通过指向各业务仓库内的 instruction sources 和 key files，把 harness 拥有的协调知识与仓库拥有的本地知识绑定在一起。
+
+只有任务层是运行时生成的，且数据流是单向的：仓库本地指令作为输入被阅读，Agent 从中学到的内容被浓缩进跨仓任务 spec。harness 从不生成、改写或回写仓库本地的 spec。
+
+知识摆放位置与执行协议是耦合的：规划与规格评审门禁、固定的状态词汇表、检查失败处理、中断安全协议，以及 helper CLI。scenario 概念回答的是*知识在哪里*；协议回答的是*执行如何保持安全、可恢复*。两者合起来，把"这一类跨仓交付应该怎么协调"从 Agent 每次现场重新摸索的东西，变成显式、预置、按协议执行的知识。
+
+## 声明式协调
+
+这个 harness 是有意选择声明式的：预制协议优先于 Agent 探索。`instruction_sources` 和 `key_files` 不是仓库知识的完整地图，而是"最低保证阅读清单"——是下限，不是上限：
+
+- 清单声明的是指针，不是内容。风格指南、工作流规则和领域知识留在各业务仓库内部，由仓库 owner 维护。
+- Agent 保留清单之外探索的自由；协议没有任何条款禁止读取额外文件，实现阶段天然需要这么做。
+- 声明的文件不存在则跳过并记录。没有场景级声明的仓库回退到 `README.md`、`CONTRIBUTING.md`、`package.json`、`Makefile` 等通用项目文件。
+
+这个限制换来的是自由探索给不了的东西：
+
+1. **确定性。** 每次运行都看到同样的保证上下文，是跨仓交付可重复的前提。
+2. **上下文经济。** 跨仓任务本身已背负协调开销；声明入口让每个仓库的发现成本是常数而不是无上界。
+3. **可验证性。** 只有声明过的文件才能被 preflight 检查存在性、被审计跳过记录。
+4. **保护承重文件。** 漏读契约或 schema 文件对下游是灾难性的；漏读风格细节通常会被检查兜住。场景作者把判断力花在绝不能漏的文件上。
+
+代码风格最能说明这种分工：风格正确性不指望 Agent 读懂指南，而是由仓库自己的 `checks`（lint、typecheck、test）强制执行。必须确定的走声明，允许模糊的留给探索。
+
+一句话概括：凡是被声明的都可被机器校验——`validate-scenario` 校验结构、`preflight` 校验分支与文件存在性、`checks` 校验约定、task files 校验可恢复性；凡是未声明的都依赖 Agent 能力。Agent 的自由没有被取消，而是被重新分配：探索留在最便宜、错误最容易被 checks 兜住的那一层（仓库内实现），而探索代价最高、出错最致命的那一层（跨仓顺序、依赖方向、契约入口）被完全声明化。
+
+代价是策展。指令清单和关键文件清单由人工维护，仓库采纳了场景尚未引用的新规范时就会过期。兜底发现机制缓解但不消除这一点；维护负担落在场景作者身上，换来的是每次执行的确定性。
+
+## 单会话局限与每仓新会话模式
+
+默认执行模型——单个 Agent 会话串行执行场景——有两个需要直视的局限：
+
+1. **跨仓上下文污染只能缓解，不能消除。** 协议防火墙（读仓库上下文前先做分支检查、每次进仓重读 instruction sources、不把一个仓库的指令套用到另一个仓库）是行为纪律，不是运行时隔离。会话历史仍会携带前面仓库的痕迹，压缩摘要会进一步模糊仓库边界。执行模型要求的每仓总结约束了向后传递的内容，但单一会话无法保证隔离。
+2. **仓库本地运行时机制不会激活。** 如"与 Repo-Local Spec 框架的关系"一节所述，hooks、skills、slash commands 和 MCP 注入绑定在会话启动时发现的项目配置上。从 harness 目录启动、随后进入业务仓库的 Agent 不会重新触发发现流程，因此单仓设计的运行时支持是缺席的，合规只发生在文档层。
+
+两个局限的结构性解法相同：让每个仓库在它自己的目录里新起一个 Agent 会话来执行，此时该仓的运行时机制正常激活。task files 让这件事不需要编排就能做到，因为它们是会话外记忆。每仓会话先读 `spec.md`、`status.md`、`decisions.md`、`validation.md`，完成仓库内工作，再把结果写回。协议完全兼容这种模式，只是不为它做调度；多 Agent 编排推迟到 MVP 之后。
+
 ## 与 Repo-Local Spec 框架的关系
 
 Scenario Harness 不与 Spec Kit、OpenSpec、Trellis 或 repo 自定义 agent workflow 这类单 repo / monorepo spec 框架竞争。它位于这些框架之上。
@@ -279,9 +323,32 @@ bin/scenario-harness checks billing-contract-change \
 除非我明确要求，不要 commit。
 ```
 
+### 5. 用每仓子进程 Agent 执行
+
+当 `status.md` 里记录了 Planning Gate 和 Spec Review Gate 之后，helper CLI
+可以自己驱动实现阶段：
+
+```bash
+bin/scenario-harness run billing-contract-change \
+  --task 2026-05-20-billing-contract-change \
+  --agent claude-code
+```
+
+`run` 是确定性的 runner，不是编排模型：两个门禁未记录就拒绝启动；按场景顺序逐仓
+推进——核对分支门禁、由场景数据渲染 prompt、在仓库目录内以独立进程组拉起 agent
+后端（`claude-code`、`codex`，或实验性的 `gemini`）、agent 退出后由 runner 亲自跑
+仓库 checks、首个失败即停止并把 stage × category 失败分类写进 task files。原始
+agent 输出落在 `tasks/<task>/logs/<repo>.log`；`.run.lock` 保证单写者；终止阶梯
+（SIGTERM → 宽限 → 对进程组 SIGKILL）执行 `--timeout`（默认每仓 1800 秒）；
+`--dry-run` 只渲染 prompt。
+
+设计理由、借鉴自 deepseek-harness 的机制清单、以及传输层选择（公开 headless CLI
+而非 SDK/app-server）见 [`docs/subprocess-agent-run.md`](docs/subprocess-agent-run.md)；
+mock 自测脚本为 `tests/run_mock_e2e.py`。
+
 ### 3. 执行模型
 
-默认执行模型是单个 agent 串行执行 scenario。MVP 工作流中不引入多 agent 调度。
+默认执行模型是单个 agent 串行执行 scenario。MVP 工作流中不引入多 agent 调度。关于这个模型需要直视的局限，以及与之兼容的每仓新会话模式，见"单会话局限与每仓新会话模式"一节。
 
 scenario 应该足够收敛，让 agent 可以依靠已配置的 repos、checks 和 scenario invariants 推进，而不需要在每个 repo 中做大范围探索。必要知识应写进 `scenario.yaml`、scenario README 和 task files，而不是依赖 agent 自行推断跨 repo 行为。
 

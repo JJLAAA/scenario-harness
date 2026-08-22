@@ -6,9 +6,12 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1630,6 +1633,784 @@ def cmd_checks(args: argparse.Namespace) -> int:
     return EXIT_OK if report["status"] == "ok" else EXIT_VALIDATION
 
 
+STATUS_STEP_RANK = {
+    "task_created": 0,
+    "scenario_invalid": 1,
+    "scenario_validated": 2,
+    "preflight_complete": 3,
+    "branch_preparation_in_progress": 4,
+    "branch_preparation_complete": 5,
+    "planning_in_progress": 6,
+    "planning_blocked": 6,
+    "planning_complete": 7,
+    "spec_review_pending": 8,
+    "spec_review_approved": 9,
+    "replanning_required": 8,
+    "replanning_in_progress": 8,
+    "replanning_complete": 8,
+    "complete": 11,
+}
+REPLANNING_STEPS = {
+    "replanning_required",
+    "replanning_in_progress",
+    "replanning_complete",
+}
+
+
+def status_step_rank(step: str | None) -> int | None:
+    if step is None:
+        return None
+    if step.startswith(("implementing:", "validating:", "repo_complete:")):
+        return 10
+    return STATUS_STEP_RANK.get(step)
+
+
+def read_current_step(status_text: str) -> str | None:
+    for line in status_text.splitlines():
+        match = re.search(r"current step\s*[:\-]\s*`?([a-z_:]+)`?", line, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
+
+
+def gate_section_ready(status_text: str, heading: str, ready_words: tuple[str, ...]) -> bool:
+    pattern = re.compile(rf"^#{1,6}\s*{heading}\b", re.IGNORECASE)
+    lines = status_text.splitlines()
+    for index, line in enumerate(lines):
+        if not pattern.match(line.strip()):
+            continue
+        section: list[str] = []
+        for follow in lines[index + 1 :]:
+            if re.match(r"^#{1,6}\s+", follow.strip()):
+                break
+            section.append(follow)
+        text = "\n".join(section).lower()
+        return any(word in text for word in ready_words)
+    return False
+
+
+def task_gates_ready(task_dir: Path) -> dict[str, Any]:
+    """Read Planning Gate and Spec Review Gate state from status.md.
+
+    Both signals are honored: the protocol `current step` line and explicit
+    gate sections. `blocked` carries no rank, so it falls back to sections.
+    Replanning states require a fresh spec review per the Replanning Protocol.
+    """
+
+    status_file = task_dir / "status.md"
+    status_text = status_file.read_text(encoding="utf-8") if status_file.exists() else ""
+    if not status_text.strip():
+        return {
+            "planning_gate": "missing",
+            "spec_review_gate": "missing",
+            "current_step": None,
+        }
+
+    current_step = read_current_step(status_text)
+    rank = status_step_rank(current_step)
+
+    planning_section = gate_section_ready(
+        status_text, "Planning Gate", ("planning_complete", "complete: yes", "complete.")
+    )
+    spec_section = gate_section_ready(
+        status_text,
+        "Spec Review Gate",
+        ("spec_review_approved", "approved", "skipped"),
+    )
+
+    planning_ready = planning_section or (rank is not None and rank >= 7)
+    if rank is None or current_step == "blocked":
+        spec_ready = spec_section
+    else:
+        spec_ready = spec_section or (
+            rank >= 9 and current_step not in REPLANNING_STEPS
+        )
+
+    return {
+        "planning_gate": "ready" if planning_ready else "missing",
+        "spec_review_gate": "ready" if spec_ready else "missing",
+        "current_step": current_step,
+    }
+
+
+class RunLock:
+    """Single-writer advisory lock for one task directory (POSIX)."""
+
+    def __init__(self, task_dir: Path):
+        self.path = task_dir / ".run.lock"
+        self.acquired = False
+
+    def acquire(self) -> None:
+        for _ in range(2):
+            try:
+                handle = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                if self._stale():
+                    continue
+                holder = self._holder()
+                raise HarnessError(
+                    f"Task is locked by another run ({holder}). Lock: {self.path}",
+                    EXIT_USAGE,
+                )
+            with os.fdopen(handle, "w", encoding="utf-8") as file:
+                file.write(f"pid={os.getpid()}\n")
+                file.write(f"started={dt.datetime.now().isoformat(timespec='seconds')}\n")
+            self.acquired = True
+            return
+        raise HarnessError(
+            f"Could not acquire task lock after stale cleanup: {self.path}",
+            EXIT_USAGE,
+        )
+
+    def _holder(self) -> str:
+        try:
+            return self.path.read_text(encoding="utf-8").strip().replace("\n", "; ")
+        except OSError:
+            return "unknown holder"
+
+    def _stale(self) -> bool:
+        try:
+            text = self.path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        match = re.search(r"pid=(\d+)", text)
+        if not match:
+            return False
+        try:
+            os.kill(int(match.group(1)), 0)
+        except ProcessLookupError:
+            try:
+                self.path.unlink()
+            except OSError:
+                pass
+            return True
+        except PermissionError:
+            return False
+        return False
+
+    def release(self) -> None:
+        if not self.acquired:
+            return
+        self.acquired = False
+        try:
+            self.path.unlink()
+        except OSError:
+            pass
+
+
+BASE_ENV_KEYS = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TMPDIR",
+    "SHELL",
+    "USER",
+    "LOGNAME",
+    "TZ",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+)
+ENV_PREFIX_ALLOWLIST = (
+    "ANTHROPIC_",
+    "OPENAI_",
+    "GEMINI_",
+    "GOOGLE_",
+    "CODEX_",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+)
+
+
+def child_env_overlay() -> dict[str, str]:
+    """Explicit allowlist overlay; parent ambient variables are not inherited."""
+
+    child_env: dict[str, str] = {}
+    for name, value in os.environ.items():
+        if name in BASE_ENV_KEYS or name.startswith(ENV_PREFIX_ALLOWLIST):
+            child_env[name] = value
+    return child_env
+
+
+RUN_PERMISSION_PRESETS = ("workspace", "read-only", "full-access")
+
+PERMISSION_FLAGS: dict[str, dict[str, list[str]]] = {
+    "claude-code": {
+        "workspace": ["--permission-mode", "acceptEdits"],
+        "read-only": ["--permission-mode", "dontAsk"],
+        "full-access": ["--permission-mode", "bypassPermissions"],
+    },
+    "codex": {
+        "workspace": ["--sandbox", "workspace-write"],
+        "read-only": ["--sandbox", "read-only"],
+        "full-access": ["--dangerously-bypass-approvals-and-sandbox"],
+    },
+    "gemini": {"workspace": [], "read-only": [], "full-access": []},
+}
+
+AGENT_PROVIDERS: dict[str, str] = {
+    "claude-code": "claude",
+    "codex": "codex",
+    "gemini": "gemini",
+}
+
+STDERR_SIGNATURES: tuple[tuple[str, str, str], ...] = (
+    (
+        "approval policy is Never",
+        "permission_denied",
+        "Agent backend rejected an escalation because the permission preset never asks.",
+    ),
+    (
+        "recorded sandbox violation",
+        "sandbox_violation",
+        "Agent backend reported a sandbox violation.",
+    ),
+    (
+        "does not have permission",
+        "permission_denied",
+        "Agent backend denied a permission request.",
+    ),
+    (
+        "permission mode",
+        "permission_denied",
+        "Agent backend reported a permission-mode problem.",
+    ),
+)
+
+
+def classify_stderr_signatures(stderr_text: str) -> tuple[str, str] | None:
+    lowered = stderr_text.lower()
+    for signature, category, reason in STDERR_SIGNATURES:
+        if signature.lower() in lowered:
+            return category, reason
+    return None
+
+
+def terminate_process_tree(process: subprocess.Popen, grace_seconds: float) -> None:
+    """POSIX termination ladder: SIGTERM to the group, grace, then SIGKILL.
+
+    Liveness is judged with poll() so a reaped (zombie) direct child counts as
+    dead; the pgid is captured first because it is unavailable after exit.
+    """
+
+    try:
+        pgid = os.getpgid(process.pid)
+    except ProcessLookupError:
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        if sig == signal.SIGTERM:
+            deadline = time.monotonic() + grace_seconds
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    return
+                time.sleep(0.2)
+
+
+@dataclass
+class AgentOutcome:
+    exit_code: int | None
+    signal_name: str | None
+    timed_out: bool
+    terminated_by_runner: bool
+    duration_seconds: float
+    stdout_text: str
+    stderr_text: str
+
+
+def spawn_agent(
+    argv: list[str],
+    cwd: Path,
+    timeout_seconds: int,
+    term_grace_seconds: float,
+    log_path: Path,
+) -> AgentOutcome:
+    """Spawn one agent backend in its own session and wait under the timeout."""
+
+    started = time.monotonic()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write(f"# agent argv: {json.dumps(argv)}\n")
+        log.write(f"# cwd: {cwd}\n")
+        log.write(f"# timeout_seconds: {timeout_seconds}\n\n")
+        log.flush()
+        try:
+            process = subprocess.Popen(
+                argv,
+                cwd=str(cwd),
+                env=child_env_overlay(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except FileNotFoundError as exc:
+            log.write(f"# spawn failed: executable not found: {argv[0]}\n")
+            raise HarnessError(
+                f"Agent executable not found on PATH: {argv[0]}. "
+                f"Install the backend or choose another --agent.",
+                EXIT_USAGE,
+            ) from exc
+
+        timed_out = False
+        terminated_by_runner = False
+        signal_name: str | None = None
+        try:
+            stdout_text, stderr_text = process.communicate(
+                timeout=timeout_seconds if timeout_seconds > 0 else None
+            )
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            terminated_by_runner = True
+            terminate_process_tree(process, term_grace_seconds)
+            stdout_text, stderr_text = process.communicate()
+            signal_name = "SIGKILL/SIGTERM"
+
+        if process.returncode is not None and process.returncode < 0:
+            signal_name = signal_name or signal.Signals(-process.returncode).name
+
+        log.write("## stdout\n\n")
+        log.write(stdout_text or "")
+        log.write("\n\n## stderr\n\n")
+        log.write(stderr_text or "")
+        log.write("\n")
+
+    return AgentOutcome(
+        exit_code=process.returncode,
+        signal_name=signal_name,
+        timed_out=timed_out,
+        terminated_by_runner=terminated_by_runner,
+        duration_seconds=time.monotonic() - started,
+        stdout_text=stdout_text or "",
+        stderr_text=stderr_text or "",
+    )
+
+
+def provider_argv(
+    agent: str, permission: str, prompt: str
+) -> list[str]:
+    executable = AGENT_PROVIDERS[agent]
+    flags = PERMISSION_FLAGS[agent][permission]
+    if agent == "claude-code":
+        return [executable, "-p", prompt, "--output-format", "json", *flags]
+    if agent == "codex":
+        return [executable, "exec", "--json", *flags, prompt]
+    return [executable, "-p", prompt, *flags]
+
+
+def agent_success_is_strict(agent: str, outcome: AgentOutcome) -> tuple[bool, str | None]:
+    """Strict success mapping: exit code 0 is necessary but not sufficient."""
+
+    if outcome.exit_code != 0:
+        return False, None
+    if agent != "claude-code":
+        return True, None
+    parsed = None
+    for line in reversed((outcome.stdout_text or "").strip().splitlines()):
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            break
+        parsed = None
+    if isinstance(parsed, dict):
+        subtype = parsed.get("subtype")
+        if isinstance(subtype, str) and subtype.startswith("error"):
+            return False, f"claude-code result subtype is '{subtype}'"
+    return True, None
+
+
+def render_agent_prompt(
+    context: dict[str, Any],
+    repo: dict[str, Any],
+    task_dir: Path,
+    expected_branch: str | None,
+    root: Path,
+) -> str:
+    instructions = repo.get("instruction_sources") or []
+    key_files = repo.get("key_files") or []
+    checks = repo.get("checks") or []
+    dependencies = repo.get("depends_on") or []
+    dependency_lines = markdown_dependencies(dependencies) if dependencies else "None."
+    return f"""You are the repo-local implementation agent for scenario `{context["scenario"]}`, repo `{repo["key"]}`.
+
+Working directory: `{repo.get("path")}`
+Expected task branch (exact match required): `{expected_branch or "TBD"}`
+
+Follow this order and stop before editing if any step fails:
+
+1. Run `git branch --show-current` and compare it exactly against the expected branch.
+   If it does not match, do not read further context or edit anything: append the
+   mismatch to `{task_dir / "status.md"}` under Blockers and exit non-zero.
+2. Read the repo-local instruction sources in order (skip missing files and record
+   the skip in `{task_dir / "status.md"}` under Notes):
+{markdown_list(instructions, "   (none declared; inspect README.md and CONTRIBUTING.md instead)")}
+
+3. Inspect the scenario-declared key files as needed for implementation:
+{markdown_list(key_files, "   (none declared)")}
+
+4. Implement the repo-local change described in `{task_dir / "spec.md"}`.
+   Upstream dependencies consumed by this repo:
+   {dependency_lines}
+
+5. Update the task files so the coordinating runner can recover state:
+   - append implementation notes to `{task_dir / "spec.md"}` if the plan deepened
+   - set per-repo status in `{task_dir / "status.md"}`
+   - record deviations in `{task_dir / "decisions.md"}`
+6. Do NOT run git commit, push, branch creation, or checkout. Do not modify git state.
+
+The coordinating runner will run the repo checks itself after you exit:
+{markdown_list(checks, "   (none declared)")}
+
+Harness protocol reference: `{root / "AGENTS.md"}`. Exit 0 only when the repo-local
+change is implemented and task files are updated."""
+
+
+def render_run_status(report: dict[str, Any]) -> str:
+    rows = []
+    for repo in report["repos"]:
+        rows.append(
+            "| {key} | {branch} | {agent} | {checks} | {result} |".format(
+                key=repo["key"],
+                branch=repo.get("branch_gate") or "-",
+                agent=repo.get("agent_result") or "-",
+                checks=repo.get("checks_result") or "-",
+                result=repo.get("result") or "-",
+            )
+        )
+    failure = report.get("failure")
+    failure_lines = (
+        f"- stage: {failure['stage']}; category: {failure['category']}; repo: "
+        f"{failure.get('repo') or '-'}; {failure['message']}"
+        if failure
+        else "None."
+    )
+    return f"""## Agent Run Report
+
+Generated: `{report["generated_at"]}`
+
+Runner: `{report["agent_backend"]}` (permission preset `{report["permission"]}`)
+
+Gates: planning `{report["gates"]["planning_gate"]}`, spec review `{report["gates"]["spec_review_gate"]}`
+
+| Repo | Branch Gate | Agent | Checks | Result |
+| --- | --- | --- | --- | --- |
+{chr(10).join(rows) if rows else "| - | - | - | - | - |"}
+
+Recommended current step: `{report["recommended_step"]}`
+
+Failure:
+
+{failure_lines}
+"""
+
+
+def render_run_validation(report: dict[str, Any]) -> str:
+    rows = []
+    for repo in report["repos"]:
+        outcome = repo.get("agent_outcome") or {}
+        rows.append(
+            "| {key} | `{agent}` | `{log}` | exit={exit_code} timeout={timeout} | {result} |".format(
+                key=repo["key"],
+                agent=report["agent_backend"],
+                log=repo.get("log_path") or "-",
+                exit_code=outcome.get("exit_code"),
+                timeout=outcome.get("timed_out"),
+                result=repo.get("result") or "-",
+            )
+        )
+    failure = report.get("failure")
+    failure_lines = (
+        f"- stage `{failure['stage']}` x category `{failure['category']}` at repo "
+        f"`{failure.get('repo') or '-'}`: {failure['message']}"
+        if failure
+        else "None."
+    )
+    return f"""## Agent Run Telemetry
+
+Generated: `{report["generated_at"]}`
+
+| Repo | Backend | Log | Agent Outcome | Result |
+| --- | --- | --- | --- | --- |
+{chr(10).join(rows) if rows else "| - | - | - | - | - |"}
+
+Failure classification:
+
+{failure_lines}
+
+Raw agent output is kept under the task `logs/` directory; this file records the
+summary only.
+"""
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    if os.name != "posix":
+        raise HarnessError(
+            "run requires POSIX process groups (macOS/Linux); Windows is not supported.",
+            EXIT_USAGE,
+        )
+
+    root = harness_root()
+    validation = validate_scenario(root, args.scenario)
+    dry_run_path_codes = {"repo_path_missing", "repo_path_not_git"}
+    fatal_findings = [
+        finding
+        for finding in validation["findings"]
+        if finding["level"] == "error"
+        and not (args.dry_run and finding["code"] in dry_run_path_codes)
+    ]
+    if fatal_findings:
+        raise HarnessError(
+            "Scenario validation failed; run refused. Fix findings first: "
+            + "; ".join(f"{item['code']}: {item['message']}" for item in fatal_findings),
+            EXIT_VALIDATION,
+        )
+
+    task_dir = resolve_task_dir(root, args.task)
+    if not task_dir.exists() or not (task_dir / "status.md").exists():
+        raise HarnessError(
+            f"Task directory with status.md is required: {task_dir}",
+            EXIT_USAGE,
+        )
+
+    context = scenario_context(root, args.scenario)
+    if args.repo:
+        selected_repos = [repo for repo in context["repos"] if repo["key"] == args.repo]
+        if not selected_repos:
+            raise HarnessError(
+                f"Scenario '{args.scenario}' does not include repo '{args.repo}'.",
+                EXIT_USAGE,
+            )
+    else:
+        selected_repos = list(context["repos"])
+
+    expected_branches = read_task_branches(task_dir)
+    report: dict[str, Any] = {
+        "scenario": args.scenario,
+        "task_dir": str(task_dir),
+        "agent_backend": args.agent,
+        "permission": args.permission,
+        "dry_run": args.dry_run,
+        "timeout_seconds": args.timeout,
+        "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        "repos": [],
+        "failure": None,
+        "recommended_step": "blocked",
+    }
+
+    def write_task_blocks() -> None:
+        upsert_marked_block(
+            task_dir / "status.md", "run-status", render_run_status(report)
+        )
+        upsert_marked_block(
+            task_dir / "validation.md", "run-validation", render_run_validation(report)
+        )
+
+    def fail(stage: str, category: str, message: str, repo_key: str | None = None) -> int:
+        report["failure"] = {
+            "stage": stage,
+            "category": category,
+            "message": message,
+            "repo": repo_key,
+        }
+        report["recommended_step"] = "blocked"
+        write_task_blocks()
+        print(
+            f"error: run blocked at stage={stage} category={category}"
+            + (f" repo={repo_key}" if repo_key else "")
+            + f": {message}",
+            file=sys.stderr,
+        )
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        return EXIT_VALIDATION
+
+    if args.dry_run:
+        report["gates"] = {"planning_gate": "skipped(dry-run)", "spec_review_gate": "skipped(dry-run)"}
+        report["recommended_step"] = "dry-run"
+        for repo in selected_repos:
+            prompt = render_agent_prompt(
+                context, repo, task_dir, expected_branches.get(repo["key"]), root
+            )
+            argv = provider_argv(args.agent, args.permission, prompt)
+            report["repos"].append(
+                {
+                    "key": repo["key"],
+                    "branch_gate": expected_branches.get(repo["key"]) or "TBD",
+                    "prompt": prompt,
+                    "argv": argv,
+                    "result": "dry-run",
+                }
+            )
+            print(f"--- repo: {repo['key']} ---")
+            print(f"argv: {json.dumps(argv[:6])} ...")
+            print(prompt)
+            print("")
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        return EXIT_OK
+
+    gates = task_gates_ready(task_dir)
+    report["gates"] = gates
+    if gates["planning_gate"] != "ready":
+        return fail(
+            "gates",
+            "planning_gate_missing",
+            "Planning Gate is not recorded as complete in status.md "
+            "(current step must reach planning_complete, or a Planning Gate section must record it).",
+        )
+    if gates["spec_review_gate"] != "ready":
+        return fail(
+            "gates",
+            "spec_review_gate_missing",
+            "Spec Review Gate is not approved or explicitly skipped in status.md "
+            "(current step must reach spec_review_approved, or a Spec Review Gate section "
+            "must record approval or a user-authorized skip).",
+        )
+
+    lock = RunLock(task_dir)
+    lock.acquire()
+    try:
+        for repo in selected_repos:
+            repo_key = repo["key"]
+            repo_path = repo.get("path")
+            entry: dict[str, Any] = {"key": repo_key, "result": "pending"}
+            report["repos"].append(entry)
+
+            preflight = collect_preflight(
+                root, args.scenario, expected_branches
+            )
+            repo_preflight = next(
+                (item for item in preflight["repos"] if item["key"] == repo_key), None
+            )
+            if repo_preflight is None or repo_preflight["branch_result"] != "pass":
+                branch_gate = (
+                    repo_preflight["branch_result"]
+                    if repo_preflight
+                    else "missing"
+                )
+                entry["branch_gate"] = branch_gate
+                entry["result"] = "blocked"
+                return fail(
+                    "preflight",
+                    "branch_mismatch"
+                    if branch_gate == "fail"
+                    else f"branch_{branch_gate}",
+                    f"Repo '{repo_key}' branch gate is '{branch_gate}' "
+                    f"(expected '{expected_branches.get(repo_key) or 'TBD'}', "
+                    f"actual '{(repo_preflight or {}).get('actual_branch') or '-'}'). "
+                    "The runner never switches branches.",
+                    repo_key,
+                )
+            entry["branch_gate"] = "pass"
+
+            prompt = render_agent_prompt(
+                context, repo, task_dir, expected_branches.get(repo_key), root
+            )
+            argv = provider_argv(args.agent, args.permission, prompt)
+            log_path = task_dir / "logs" / f"{repo_key}.log"
+            entry["log_path"] = str(log_path)
+
+            outcome = spawn_agent(
+                argv,
+                Path(repo_path or "."),
+                args.timeout,
+                args.term_grace,
+                log_path,
+            )
+            entry["agent_outcome"] = {
+                "exit_code": outcome.exit_code,
+                "signal": outcome.signal_name,
+                "timed_out": outcome.timed_out,
+                "terminated_by_runner": outcome.terminated_by_runner,
+                "duration_seconds": round(outcome.duration_seconds, 2),
+            }
+
+            if outcome.timed_out:
+                entry["agent_result"] = "timeout"
+                entry["result"] = "blocked"
+                return fail(
+                    "agent",
+                    "timeout",
+                    f"Agent for '{repo_key}' timed out after {args.timeout}s and the "
+                    "process group was terminated by the runner.",
+                    repo_key,
+                )
+            strict_ok, strict_reason = agent_success_is_strict(args.agent, outcome)
+            if not strict_ok:
+                if strict_reason:
+                    entry["agent_result"] = "invalid-success"
+                    entry["result"] = "blocked"
+                    return fail(
+                        "agent", "invalid_success", strict_reason, repo_key
+                    )
+                signature = classify_stderr_signatures(outcome.stderr_text or "")
+                category, message = (
+                    (signature[0], signature[1])
+                    if signature
+                    else (
+                        "nonzero_exit",
+                        f"Agent for '{repo_key}' exited with code {outcome.exit_code}"
+                        + (f" ({outcome.signal_name})" if outcome.signal_name else "")
+                        + ". See the raw log for details.",
+                    )
+                )
+                entry["agent_result"] = category
+                entry["result"] = "blocked"
+                return fail("agent", category, message, repo_key)
+            entry["agent_result"] = "success"
+
+            checks_report = run_checks(
+                check_matrix(root, args.scenario, repo_key), args.check_timeout
+            )
+            failed = [
+                item for item in checks_report["results"] if item["result"] != "pass"
+            ]
+            if failed:
+                entry["checks_result"] = "fail"
+                entry["result"] = "blocked"
+                first = failed[0]
+                return fail(
+                    "checks",
+                    "check_timeout" if first["result"] == "timeout" else "check_failed",
+                    f"Repo '{repo_key}' check failed: `{first['command']}` "
+                    f"({first['result']}, exit {first.get('exit_code')}). "
+                    "Checks are run by the runner, not trusted from the agent.",
+                    repo_key,
+                )
+            entry["checks_result"] = "pass"
+            entry["result"] = "complete"
+            report["recommended_step"] = f"repo_complete:{repo_key}"
+            write_task_blocks()
+
+        report["recommended_step"] = "complete"
+        write_task_blocks()
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(f"status: complete ({len(selected_repos)} repo(s))")
+            for repo in report["repos"]:
+                print(
+                    f"- repo={repo['key']} branch={repo.get('branch_gate')} "
+                    f"agent={repo.get('agent_result')} checks={repo.get('checks_result')} "
+                    f"result={repo['result']}"
+                )
+        return EXIT_OK
+    finally:
+        lock.release()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="scenario-harness",
@@ -1752,6 +2533,59 @@ def build_parser() -> argparse.ArgumentParser:
     )
     checks.add_argument("--json", action="store_true", help="Emit stable JSON output.")
     checks.set_defaults(func=cmd_checks)
+
+    run = subparsers.add_parser(
+        "run",
+        help="Execute the per-repo subprocess agent layer for a gated task.",
+    )
+    run.add_argument("scenario", help="Scenario directory name under scenarios/.")
+    run.add_argument(
+        "--task",
+        required=True,
+        help="Task id under tasks/ or a task directory path with status.md.",
+    )
+    run.add_argument(
+        "--repo",
+        help="Run a single repo key from the scenario instead of the full order.",
+    )
+    run.add_argument(
+        "--agent",
+        choices=sorted(AGENT_PROVIDERS),
+        default="claude-code",
+        help="Agent backend provider. Default: claude-code.",
+    )
+    run.add_argument(
+        "--permission",
+        choices=RUN_PERMISSION_PRESETS,
+        default="workspace",
+        help="Non-interactive permission preset. Default: workspace "
+        "(edits allowed, escalations denied). read-only cannot implement.",
+    )
+    run.add_argument(
+        "--timeout",
+        type=int,
+        default=1800,
+        help="Per-repo agent timeout in seconds. 0 disables. Default: 1800.",
+    )
+    run.add_argument(
+        "--check-timeout",
+        type=int,
+        default=900,
+        help="Per-check-command timeout in seconds. Default: 900.",
+    )
+    run.add_argument(
+        "--term-grace",
+        type=float,
+        default=10.0,
+        help="Seconds between SIGTERM and SIGKILL in the termination ladder.",
+    )
+    run.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Render per-repo prompts and argv without gates, lock, or spawn.",
+    )
+    run.add_argument("--json", action="store_true", help="Emit stable JSON output.")
+    run.set_defaults(func=cmd_run)
 
     return parser
 

@@ -56,6 +56,7 @@ Use `bin/scenario-harness` for mechanical checks before doing manual reasoning.
 - `bin/scenario-harness plan-scenario <scenario>` prints the compact execution plan: repo order, paths, instruction sources, key files, and checks.
 - `bin/scenario-harness list-tasks <scenario>` lists matching task directories newest first for resume decisions.
 - `bin/scenario-harness checks <scenario>` lists repo-local checks; add `--run --task <task-id>` to execute checks and update `validation.md`.
+- `bin/scenario-harness run <scenario> --task <task-id>` executes the gated per-repo subprocess agent layer: it refuses to start unless the Planning Gate and Spec Review Gate are recorded in `status.md`, then walks repositories in scenario order, spawns the selected agent backend (`--agent claude-code|codex|gemini`) inside each repository, runs repo checks itself, and records agent telemetry and stage × category failures in task files. See `docs/subprocess-agent-run.md`.
 
 Exit codes:
 
@@ -63,7 +64,7 @@ Exit codes:
 - `2`: scenario or repository configuration is invalid.
 - `64`: command usage or runtime prerequisites are invalid.
 
-The helper CLI never edits business repositories.
+The helper CLI itself never edits business repositories and never changes git state; `run` only delegates gated repo-local edits to child agent processes started inside each repository.
 
 ## Scenario Identification Protocol
 
