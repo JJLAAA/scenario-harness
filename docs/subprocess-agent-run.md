@@ -1,125 +1,136 @@
-# Subprocess Agent Run Layer
+# 子进程 Agent 执行层（Subprocess Agent Run）
 
-Design for `bin/scenario-harness run`: the per-repo subprocess agent execution
-layer. It implements the "per-repo session pattern" described in the README
-section *Single-Session Limits And Per-Repo Sessions* — each business repository
-gets its own agent process started inside that repository, so repo-local
-runtime mechanisms (instruction files, hooks, skills discovered at session
-start) activate normally, while the coordinating runner stays deterministic.
+`bin/scenario-harness run` 的设计文档：每仓子进程 Agent 执行层。它实现 README
+"Single-Session Limits And Per-Repo Sessions" 一节描述的"每仓新会话模式"——每个业务仓库
+在自己的目录内获得一个独立的 Agent 进程，仓库本地运行时机制（指令文件、hooks、skills
+在会话启动时被发现）正常加载；协调侧的 runner 保持确定性。
 
-The design borrows the process-management seams of
-`deepseek-harness` (dsh) v0.1.0-rc.8. The transport is deliberately different;
-see [Transport Choice](#transport-choice).
+设计借鉴了 `deepseek-harness`（dsh）v0.1.0-rc.8 的进程管理缝隙（seam）。传输层刻意做了
+不同选择，见[传输层选择](#传输层选择)。
 
-## Architecture
+## 架构
 
-Two layers, no LLM in the coordination path:
+两层结构，协调路径中没有 LLM：
 
 ```
-dumb runner (deterministic Python, no model)
-  └── provider adapter (spawn / result / terminate)
+哑 runner（确定性 Python，无模型）
+  └── provider 适配层（spawn / result / terminate）
         ├── claude-code → claude -p <prompt> --output-format json
         ├── codex       → codex exec --json <prompt>
-        └── gemini      → gemini -p <prompt>   (experimental slot)
+        └── gemini      → gemini -p <prompt>   （实验扩展位）
 ```
 
-- The runner reads `scenario.yaml` (order, checks), task files (branches,
-  gates), renders one prompt per repo, spawns the backend with the repo as
-  cwd, then runs the repo checks itself and gates on them.
-- Intelligence lives inside each per-repo agent session; coordination is code.
-- Handoff medium is the task files (`spec.md`, `status.md`, `decisions.md`,
-  `validation.md`) plus raw logs under `tasks/<task>/logs/<repo>.log`.
+- runner 读取 `scenario.yaml`（order、checks）与 task files（分支、门禁），每仓渲染一份
+  prompt，以仓库为 cwd 拉起后端，随后亲自执行仓库 checks 并据此门禁。
+- 智能放在每个仓库的子 Agent 会话内部；协调是代码。
+- 交接介质是 task files（`spec.md`、`status.md`、`decisions.md`、`validation.md`）
+  加上原始日志 `tasks/<task>/logs/<repo>.log`。
 
-## Per-Repo Loop
+## 每仓执行循环
 
-For each repo in scenario order (or the single `--repo`):
+对 scenario order 中的每个仓库（或 `--repo` 指定的单仓）：
 
-1. **Gate precheck** (once, before the first repo): `status.md` must show the
-   Planning Gate complete and the Spec Review Gate approved or explicitly
-   skipped. Signals honored: the protocol `current step:` line
-   (`planning_complete`/`spec_review_approved` or later, replanning states
-   require a fresh review) and explicit `## Planning Gate` / `## Spec Review
-   Gate` sections. Missing gates → refusal, exit 2.
-2. **Preflight**: branch must exactly match the task-expected branch. The
-   runner never creates, checks out, or renames branches.
-3. **Prompt render**: deterministic template over scenario.yaml data +
-   task-file paths. The prompt orders the child agent to verify the branch,
-   read `instruction_sources` in order, inspect `key_files`, implement per
-   `spec.md`, update task files, and never commit.
-4. **Spawn**: backend runs in its own session (`start_new_session=True`) with
-   the repo as cwd and an explicit env overlay.
-5. **Checks**: the runner — not the child agent — runs `repos.<repo>.checks`
-   after the agent exits. Self-reported success is never trusted.
-6. **Gate**: agent strict-success + all checks pass → next repo; otherwise the
-   run stops as `blocked`, with the failure recorded in task files.
+1. **门禁预检**（一次，在第一个仓库之前）：`status.md` 必须显示 Planning Gate 已完成、
+   Spec Review Gate 已批准或显式跳过。识别两种信号：协议规定的 `current step:` 行
+   （达到 `planning_complete`/`spec_review_approved` 或更晚；replanning 状态需要重新评审）
+   以及显式的 `## Planning Gate` / `## Spec Review Gate` 章节。门禁缺失 → 拒绝执行，
+   退出码 2。
+2. **Preflight**：分支必须与任务期望分支精确匹配。runner 绝不创建、切换或重命名分支。
+3. **Prompt 渲染**：由 scenario.yaml 数据 + task files 路径驱动的确定性模板。prompt 要求
+   子 Agent 核对分支、按序读取 `instruction_sources`、检视 `key_files`、按 `spec.md`
+   实现、更新 task files、绝不 commit。
+4. **Spawn**：后端以独立会话（`start_new_session=True`）运行，cwd 为仓库目录，env 使用
+   显式 overlay。
+5. **Checks**：子 Agent 退出后由 runner——而非子 Agent——执行 `repos.<repo>.checks`。
+   从不信任自我报告的成功。
+6. **门禁**：Agent 严格成功 + 全部 checks 通过 → 下一仓库；否则 run 以 `blocked` 停止，
+   失败记录写入 task files。
 
-`--dry-run` renders prompts and argv only (no gates, lock, or spawn).
+`--dry-run` 只渲染 prompt 与 argv（不做门禁、不加锁、不 spawn）。
 
-## Borrowed From dsh rc.8
+## 借鉴自 dsh rc.8 的机制
 
-| # | Mechanism | dsh source | scenario-harness adaptation |
+| # | 机制 | dsh 来源 | scenario-harness 适配 |
 | - | --- | --- | --- |
-| 1 | Process-tree termination with escalation ladder + grace, whole-tree ownership | `packages/subprocess` (subprocess seam; `DEFAULT_DISPOSE_GRACE_MS`) | own session per spawn; SIGTERM → `--term-grace` (10s) → SIGKILL to the process group |
-| 2 | Scrubbed parent environment (ambient vars must not leak into children) | `packages/subprocess` `scrubbedParentEnv` | allowlist overlay: base vars (`PATH`, `HOME`, locale, …) + auth/proxy prefixes (`ANTHROPIC_*`, `OPENAI_*`, …); everything else dropped |
-| 3 | Strict success mapping + typed failure taxonomy | `subagent-claude-code/src/run.ts` (only SDK `success` subtype completes; stage × category) | exit 0 is necessary but not sufficient (claude-code result JSON `subtype: error_*` → `invalid_success`); failures classified stage (`gates`/`preflight`/`agent`/`checks`) × category |
-| 4 | Unattended permission whitelist with conservative default | `subagent-claude-code` `CLAUDE_CODE_PERMISSION_MODES`, `subagent-codex` `CODEX_PERMISSION_MODES` | three non-interactive presets: `workspace` (default: edits allowed, escalations denied — `read-only` cannot implement), `read-only`, `full-access` |
-| 5 | stderr signature matching for protocol-blind failures | `subagent-codex/src/wire.ts` `STDERR_PERMISSION_SIGNATURES` | signature table over the raw log stderr (`permission_denied`, `sandbox_violation`, …), mapped into the failure category |
-| 6 | Provider contract: one seam, multiple backends | `packages/subagent` capability family (`SubagentStartRequest/Result`) | `--agent {claude-code,codex,gemini}`; each provider is an argv builder inside one spawn/result/terminate contract |
+| 1 | 进程树终止：升级阶梯 + 宽限，整树所有权 | `packages/subprocess`（subprocess seam；`DEFAULT_DISPOSE_GRACE_MS`） | 每次 spawn 独立会话；SIGTERM → `--term-grace`（10s）→ 对进程组 SIGKILL |
+| 2 | 父环境清洗（环境变量不得泄漏给子进程） | `packages/subprocess` `scrubbedParentEnv` | 白名单 overlay：基础变量（`PATH`、`HOME`、locale 等）+ 认证/代理前缀（`ANTHROPIC_*`、`OPENAI_*` 等）；其余全部丢弃 |
+| 3 | 严格成功映射 + 类型化失败分类 | `subagent-claude-code/src/run.ts`（仅 SDK `success` 子类型算完成；stage × category） | exit 0 是必要条件而非充分条件（claude-code 结果 JSON `subtype: error_*` → `invalid_success`）；失败按 stage（`gates`/`preflight`/`agent`/`checks`）× category 分类 |
+| 4 | 非交互权限白名单 + 保守缺省 | `subagent-claude-code` `CLAUDE_CODE_PERMISSION_MODES`、`subagent-codex` `CODEX_PERMISSION_MODES` | 三个非交互预设：`workspace`（缺省：允许编辑、拒绝提权——`read-only` 无法实现任务）、`read-only`、`full-access` |
+| 5 | stderr 签名匹配（协议不上报的失败） | `subagent-codex/src/wire.ts` `STDERR_PERMISSION_SIGNATURES` | 对原始日志 stderr 的签名表（`permission_denied`、`sandbox_violation` 等），映射进失败 category |
+| 6 | Provider 契约：一个缝隙、多个后端 | `packages/subagent` 能力家族（`SubagentStartRequest/Result`） | `--agent {claude-code,codex,gemini}`；每个 provider 是同一个 spawn/result/terminate 契约内的 argv 构造器 |
 
-## Transport Choice
+## 传输层选择
 
-dsh embeds agents as live subagents: Claude Code through the official Agent
-SDK, Codex through its app-server JSON-RPC protocol with a version-pinned wire
-adapter (`wire.ts`, "app-server 0.147.0"). That depth buys streaming message
-mapping, continuable children, and mid-run control — none of which a one-shot
-batch runner needs.
+dsh 把 Agent 作为活的子代理嵌入：Claude Code 走官方 Agent SDK，Codex 走其 app-server
+JSON-RPC 协议并维护版本锁定的 wire 适配器（`wire.ts`，"app-server 0.147.0"）。那种深度换来
+流式消息映射、可续期子代理和中途控制——一次性批处理 runner 全都用不上。
 
-This harness uses the public headless CLI interfaces instead:
+本项目改用公开的 headless CLI 接口：
 
-- zero new dependencies (pure Python stdlib; no Node toolchain, no wire
-  protocol to maintain against pinned internal versions);
-- `claude -p --output-format json` and `codex exec --json` are documented
-  public contracts, sufficient for send-prompt / get-result / exit-code;
-- the borrowed seams (process ownership, failure taxonomy, provider
-  contract) are orthogonal to transport.
+- 零新增依赖（纯 Python 标准库；不需要 Node 工具链，不需要针对内部版本维护 wire 协议）；
+- `claude -p --output-format json` 与 `codex exec --json` 是有公开文档的契约，对
+  发 prompt / 收结果 / 拿退出码已经足够；
+- 借来的缝隙（进程所有权、失败分类、provider 契约）与传输层正交。
 
-Upgrade path: the provider contract means a backend can later grow an
-SDK-based or app-server-based adapter without touching the runner.
+升级路径：provider 契约意味着某个后端将来可以长出基于 SDK 或 app-server 的适配器，
+而 runner 一行不改。
 
-## Failure Taxonomy
+## 失败分类
 
-Stages: `gates`, `preflight`, `agent`, `checks`.
-Categories include: `planning_gate_missing`, `spec_review_gate_missing`,
-`branch_fail`/`branch_not_configured`, `nonzero_exit`, `signal`, `timeout`,
-`invalid_success`, `permission_denied`, `sandbox_violation`,
-`check_failed`, `check_timeout`.
+Stage：`gates`、`preflight`、`agent`、`checks`。
+Category 包括：`planning_gate_missing`、`spec_review_gate_missing`、
+`branch_fail`/`branch_not_configured`、`nonzero_exit`、`signal`、`timeout`、
+`invalid_success`、`permission_denied`、`sandbox_violation`、`check_failed`、
+`check_timeout`。
 
-Every failure is written to `validation.md` (marked block `run-validation`)
-and `status.md` (marked block `run-status`) with the recommended current step
-(`blocked`, or `repo_complete:<repo-key>` after each completed repo). Exit
-codes: `0` complete, `2` gate/repo failures, `64` usage, lock, spawn, or
-non-POSIX platform.
+每个失败写入 `validation.md`（标记块 `run-validation`）与 `status.md`（标记块
+`run-status`），并给出推荐的 current step（`blocked`，或每个仓库完成后的
+`repo_complete:<repo-key>`）。退出码：`0` 完成；`2` 门禁/仓库失败；`64` 用法、锁、
+spawn 或非 POSIX 平台错误。
 
-## Safety Properties
+## 安全属性
 
-- **Single writer**: `tasks/<task>/.run.lock` (O_CREAT|O_EXCL, pid recorded;
-  stale locks whose pid is dead are reclaimed).
-- **No git mutations**: the runner and the child prompt both forbid commit,
-  push, checkout, and branch creation.
-- **Checks are runner-owned**: machine verification, never agent self-report.
-- **Recovery medium**: task files only; resuming re-runs `run`, which skips
-  nothing automatically — it re-checks gates, branch, and locks each time.
+- **单写者**：`tasks/<task>/.run.lock`（O_CREAT|O_EXCL，记录 pid；pid 已死的陈锁会被回收）。
+- **不改 git 状态**：runner 与子 Agent prompt 都禁止 commit、push、checkout 和建分支。
+- **checks 归 runner**：机器验证，绝不采用 Agent 自报。
+- **恢复介质**：只有 task files；恢复即重跑 `run`，它不自动跳过任何东西——每次都重新
+  核对门禁、分支与锁。
 
-## Not Borrowed From dsh
+## Headless 运行时激活核查（对照官方文档）
 
-Cordis-style DI service architecture, PTY/foreground process management,
-continuable background subagents, profile/plugin system, in-process subagent
-drivers, app-server wire adapter. Those serve a full agent host; this harness
-keeps a dumb serial runner.
+后端在仓库目录内以 headless 方式拉起时，哪些仓库本地运行时机制真正激活：
 
-## Status
+| 机制 | `claude -p` | `codex exec` |
+| --- | --- | --- |
+| cwd 下的 `AGENTS.md` / 指令文件 | 加载 | 加载 |
+| 项目/用户 settings hooks（`.claude/settings.json`） | 加载——官方原文 "headless mode reuses the same settings, hooks, and permission rules as the interactive CLI" | 不适用（无仓库级 hooks 概念；受管理的 lifecycle hooks 在 `requirements.toml`，不在仓库里） |
+| Skills | 加载 | 不适用 |
+| `config.toml` | 不适用 | 默认加载（存在 `--ignore-user-config` 可跳过） |
+| MCP servers | 部分——远程/deferred 工具在 `-p` 下有已知可见性 bug（claude-code issue #43298） | 会初始化（`required = true` 的服务初始化失败会令 exec 退出），但需要审批的 MCP 工具调用在 stdin 关闭时被自动取消（codex issue #24135） |
+| Subagent frontmatter hooks | 不激活——需要通过交互式对话接受工作区信任；`-p` 会话不算数 | 不适用 |
 
-Implemented in `bin/scenario-harness run`; self-tested by
-`tests/run_mock_e2e.py` (mock backends, temp repos, zero external side
-effects). Real-agent validation on actual business repositories is a
-user-driven step outside the automated tests.
+对本 runner 的启示：
+
+- 文档级合规路径不受影响：渲染出的 prompt 始终要求子 Agent 按序读取
+  `instruction_sources`，这正是本 harness 规定的静态兜底入口。
+- 工作流依赖 subagent frontmatter hooks 的仓库，必须先在仓库里开一次交互式
+  Claude Code 会话完成预信任；目前没有 headless 的 `--trust` 旗标（特性请求 #23109）。
+- 场景的实现阶段不应依赖需审批的 MCP 工具；sandbox/approval 预设由 provider 层显式设置。
+- headless 下 hooks 失败通常是非阻塞的，所以 hooks 不能是唯一强制层——这也是为什么
+  runner 要亲自重跑仓库 checks（机器验证层留在 runner 手里）。
+
+来源：Claude Code headless 与 hooks 文档（code.claude.com/docs/en/headless、/hooks）、
+Codex 非交互模式文档（learn.chatgpt.com/docs/non-interactive-mode），以及两个 MCP
+例外对应的公开 issue。
+
+## 不从 dsh 搬的东西
+
+Cordis 式 DI 服务架构、PTY/前台进程管理、可续期后台子代理、profile/插件体系、进程内
+subagent 驱动、app-server wire 适配器。那些服务于完整的 Agent 宿主；本 harness 保持一个
+哑的串行 runner。
+
+## 状态
+
+已在 `bin/scenario-harness run` 实现；由 `tests/run_mock_e2e.py` 自测（mock 后端、
+临时仓库、零外部副作用）。在真实业务仓库上用真实 Agent 验收属于用户驱动的步骤，
+在自动化测试之外。

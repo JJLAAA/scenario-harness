@@ -66,7 +66,7 @@ harness 把一次跨仓交付所需的知识分成三层，各有明确的归属
 1. **跨仓上下文污染只能缓解，不能消除。** 协议防火墙（读仓库上下文前先做分支检查、每次进仓重读 instruction sources、不把一个仓库的指令套用到另一个仓库）是行为纪律，不是运行时隔离。会话历史仍会携带前面仓库的痕迹，压缩摘要会进一步模糊仓库边界。执行模型要求的每仓总结约束了向后传递的内容，但单一会话无法保证隔离。
 2. **仓库本地运行时机制不会激活。** 如"与 Repo-Local Spec 框架的关系"一节所述，hooks、skills、slash commands 和 MCP 注入绑定在会话启动时发现的项目配置上。从 harness 目录启动、随后进入业务仓库的 Agent 不会重新触发发现流程，因此单仓设计的运行时支持是缺席的，合规只发生在文档层。
 
-两个局限的结构性解法相同：让每个仓库在它自己的目录里新起一个 Agent 会话来执行，此时该仓的运行时机制正常激活。task files 让这件事不需要编排就能做到，因为它们是会话外记忆。每仓会话先读 `spec.md`、`status.md`、`decisions.md`、`validation.md`，完成仓库内工作，再把结果写回。协议完全兼容这种模式，只是不为它做调度；多 Agent 编排推迟到 MVP 之后。
+两个局限的结构性解法相同：让每个仓库在它自己的目录里新起一个 Agent 会话来执行，此时该仓的运行时机制正常激活。（headless CLI 下各机制的激活核查——包括哪些机制不会激活，如 Claude Code 的 subagent frontmatter hooks 与需审批的 MCP 工具——已记录于 `docs/subprocess-agent-run.md`。）task files 让这件事不需要编排就能做到，因为它们是会话外记忆。每仓会话先读 `spec.md`、`status.md`、`decisions.md`、`validation.md`，完成仓库内工作，再把结果写回。协议完全兼容这种模式，只是不为它做调度；多 Agent 编排推迟到 MVP 之后。
 
 ## 与 Repo-Local Spec 框架的关系
 

@@ -1,0 +1,258 @@
+<mxfile host="app.diagrams.net">
+  <diagram id="run-arch" name="架构图">
+    <mxGraphModel dx="1200" dy="800" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1240" pageHeight="780" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="pA" value="协调层 · Harness Root — 确定性 runner（无 LLM 编排）" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;opacity=35;verticalAlign=top;fontSize=13;fontStyle=1;html=1;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="740" height="304" as="geometry" />
+        </mxCell>
+        <mxCell id="a1" value="门禁前置：Planning Gate +&lt;br&gt;Spec Review Gate（未过→拒绝执行）" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="86" width="200" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="a2" value="Prompt 渲染&lt;br&gt;（scenario.yaml + task files 数据驱动）" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="280" y="86" width="220" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="a3" value="runner 亲自执行 checks&lt;br&gt;（不信任子 Agent 自报）" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="520" y="86" width="240" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="a4" value="失败分类&lt;br&gt;stage × category" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="146" width="200" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="a5" value=".run.lock 单写者 + 陈锁回收" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="280" y="146" width="220" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="a6" value="严格成功映射&lt;br&gt;（exit 0 ≠ 成功，subtype 校验）" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="520" y="146" width="240" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="a7" value="Provider 适配层 — 统一契约 spawn / result / terminate（dsh⑥ provider seam）" style="text;html=1;align=center;fontStyle=1;fontSize=11;fontColor=#1d4ed8;" vertex="1" parent="1">
+          <mxGeometry x="60" y="206" width="700" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="a8" value="claude-code&lt;br&gt;&lt;code&gt;claude -p --output-format json&lt;/code&gt;" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="244" width="220" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="a9" value="codex&lt;br&gt;&lt;code&gt;codex exec --json&lt;/code&gt;" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="300" y="244" width="200" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="a10" value="gemini（实验扩展位）&lt;br&gt;&lt;code&gt;gemini -p&lt;/code&gt;" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;html=1;whiteSpace=wrap;fontSize=11;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="520" y="244" width="240" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="pB" value="进程边界（spawn 时施加）— dsh 借鉴机制" style="rounded=1;fillColor=#ffe6cc;strokeColor=#d79b00;opacity=35;verticalAlign=top;fontSize=13;fontStyle=1;html=1;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="40" y="384" width="740" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="b1" value="env allowlist overlay&lt;br&gt;白名单外环境变量全部丢弃&lt;br&gt;（dsh② scrubbedParentEnv）" style="rounded=1;fillColor=#ffe6cc;strokeColor=#d79b00;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="424" width="210" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="b2" value="start_new_session&lt;br&gt;独立进程组 · cwd=仓库目录&lt;br&gt;（仓库本地配置启动即加载，&lt;br&gt;例外清单见 docs 核查表）" style="rounded=1;fillColor=#ffe6cc;strokeColor=#d79b00;html=1;whiteSpace=wrap;fontSize=10;" vertex="1" parent="1">
+      <mxGeometry x="290" y="424" width="220" height="60" as="geometry" />
+    </mxCell>
+        <mxCell id="b3" value="终止阶梯 + 超时&lt;br&gt;SIGTERM→宽限→SIGKILL（杀整组）&lt;br&gt;--timeout 默认 1800s（dsh① 进程树）" style="rounded=1;fillColor=#ffe6cc;strokeColor=#d79b00;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="530" y="424" width="230" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="pC" value="业务仓库 ×N（独立 git 仓，按 scenario order 串行进入）" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;opacity=35;verticalAlign=top;fontSize=13;fontStyle=1;html=1;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="40" y="544" width="740" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="c1" value="仓库 A（order[0]）&lt;br&gt;&lt;br&gt;cwd=仓库目录&lt;br&gt;AGENTS.md / 设置 hooks / skills 启动即加载&lt;br&gt;（headless 例外：subagent hooks 需交互信任、&lt;br&gt;审批型 MCP 受限，见 docs 核查表）&lt;br&gt;&lt;br&gt;子 Agent 实现代码，禁止 commit/push/checkout" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;html=1;whiteSpace=wrap;fontSize=10;align=left;spacingLeft=8;" vertex="1" parent="1">
+      <mxGeometry x="60" y="588" width="220" height="130" as="geometry" />
+    </mxCell>
+        <mxCell id="c2" value="仓库 B（order[1]）&lt;br&gt;&lt;br&gt;同左&lt;br&gt;&lt;br&gt;depends_on 上游就绪后&lt;br&gt;方可进入" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;html=1;whiteSpace=wrap;fontSize=11;align=left;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="300" y="588" width="220" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="c3" value="仓库 C（order[2]）&lt;br&gt;&lt;br&gt;同左&lt;br&gt;&lt;br&gt;runner 按序推进&lt;br&gt;首个失败即停止" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;html=1;whiteSpace=wrap;fontSize=11;align=left;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="540" y="588" width="220" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="pD" value="tasks/&lt;task&gt;/ — 会话外记忆（唯一恢复介质）" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;opacity=35;verticalAlign=top;fontSize=13;fontStyle=1;html=1;whiteSpace=wrap;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="830" y="40" width="330" height="580" as="geometry" />
+        </mxCell>
+        <mxCell id="d1" value="spec.md" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="86" width="290" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="d2" value="status.md&lt;br&gt;current step / 分支表 / 门禁 / run-status 块" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="132" width="290" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="d3" value="decisions.md" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="190" width="290" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="d4" value="validation.md&lt;br&gt;run-validation 块（遥测 + 失败分类）" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="236" width="290" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="d5" value="logs/&lt;repo&gt;.log（原始 agent 输出）" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="294" width="290" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="d6" value=".run.lock" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="340" width="290" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="d7" value="读写契约&lt;br&gt;&lt;br&gt;runner 写：门禁结果 / 检查结果 / 失败分类&lt;br&gt;子 Agent 写：实现笔记 / 状态 / 决策&lt;br&gt;&lt;br&gt;恢复只靠文件：中断后重跑 run，&lt;br&gt;从 status.md 的 run-status 接续" style="text;html=1;align=left;verticalAlign=top;fontSize=11;fontColor=#7a5c00;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="850" y="392" width="290" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="eAB" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;" edge="1" source="pA" target="pB" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eBC" value="每仓 spawn 一个子进程" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;fontSize=11;" edge="1" source="pB" target="pC" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eAD" value="读写：门禁 / 检查 / 失败落盘" style="edgeStyle=orthogonalEdgeStyle;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;html=1;dashed=1;fontSize=11;" edge="1" source="pA" target="pD" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eCD" value="子 Agent 写回" style="edgeStyle=orthogonalEdgeStyle;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.8;entryDx=0;entryDy=0;html=1;dashed=1;fontSize=11;" edge="1" source="pC" target="pD" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="806" y="644" />
+              <mxPoint x="806" y="504" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="run-flow" name="执行流程">
+    <mxGraphModel dx="1200" dy="800" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="960" pageHeight="1120" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="s1" value="run &lt;scenario&gt; --task &lt;id&gt;&lt;br&gt;[--repo --agent --permission --dry-run --timeout]" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;html=1;whiteSpace=wrap;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="250" y="40" width="240" height="44" as="geometry" />
+        </mxCell>
+        <mxCell id="s2" value="前置检查：POSIX / 场景校验&lt;br&gt;task 目录与 status.md 存在" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="250" y="116" width="240" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="s3" value="--dry-run？" style="rhombus;fillColor=#e1d5e7;strokeColor=#9673a6;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="270" y="198" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s3y" value="渲染每仓 prompt + argv&lt;br&gt;输出预览（不锁 / 不 spawn）" style="rounded=1;fillColor=#f5f5f5;strokeColor=#666666;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="204" width="170" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="s3e" value="结束（exit 0）" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="288" width="170" height="36" as="geometry" />
+        </mxCell>
+        <mxCell id="s4" value="双门禁 ready？&lt;br&gt;Planning + Spec Review" style="rhombus;fillColor=#e1d5e7;strokeColor=#9673a6;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="270" y="292" width="200" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="s5" value="获取 .run.lock&lt;br&gt;（被占→exit 64；死 pid 陈锁回收）" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="250" y="390" width="240" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="s6" value="order 中还有&lt;br&gt;下一仓库？" style="rhombus;fillColor=#e1d5e7;strokeColor=#9673a6;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="270" y="472" width="200" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="s6n" value="写 run-status：complete&lt;br&gt;exit 0" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;html=1;whiteSpace=wrap;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="480" width="170" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="s7" value="分支精确匹配？&lt;br&gt;expected == actual" style="rhombus;fillColor=#e1d5e7;strokeColor=#9673a6;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="270" y="572" width="200" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="s8" value="渲染 prompt → spawn 子进程&lt;br&gt;cwd=仓库 · 独立进程组 · env overlay" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="250" y="672" width="240" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="s9" value="超时？&lt;br&gt;（--timeout）" style="rhombus;fillColor=#e1d5e7;strokeColor=#9673a6;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="270" y="756" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="s10" value="严格成功？&lt;br&gt;exit 0 且 subtype=success" style="rhombus;fillColor=#e1d5e7;strokeColor=#9673a6;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="270" y="852" width="200" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="s11" value="checks 全过？&lt;br&gt;（runner 亲自执行）" style="rhombus;fillColor=#e1d5e7;strokeColor=#9673a6;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="270" y="952" width="200" height="64" as="geometry" />
+        </mxCell>
+        <mxCell id="s12" value="更新 task files&lt;br&gt;run-status: repo_complete:&lt;repo&gt;" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;html=1;whiteSpace=wrap;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="250" y="1052" width="240" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="R" value="失败出口&lt;br&gt;&lt;br&gt;前置类：直接退出（exit 64 / 2）&lt;br&gt;执行类：stage × category 落盘&lt;br&gt;status.md / validation.md&lt;br&gt;→ blocked → exit 2" style="rounded=1;fillColor=#f8cecc;strokeColor=#b85450;html=1;whiteSpace=wrap;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="640" y="700" width="260" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="f1" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;" edge="1" source="s1" target="s2" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f2" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;" edge="1" source="s2" target="s3" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f2f" value="前置失败" style="edgeStyle=orthogonalEdgeStyle;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;fontSize=10;fontColor=#b85450;" edge="1" source="s2" target="R" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="580" y="140" />
+              <mxPoint x="770" y="140" />
+              <mxPoint x="770" y="680" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="f3" value="是" style="edgeStyle=orthogonalEdgeStyle;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;html=1;fontSize=10;" edge="1" source="s3" target="s3y" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f3y" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;" edge="1" source="s3y" target="s3e" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f4" value="否" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;fontSize=10;" edge="1" source="s3" target="s4" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f4f" value="stage=gates&lt;br&gt;门禁缺失 → 拒绝" style="edgeStyle=orthogonalEdgeStyle;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;fontSize=10;fontColor=#b85450;" edge="1" source="s4" target="R" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="560" y="324" />
+              <mxPoint x="770" y="324" />
+              <mxPoint x="770" y="680" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="f5" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;" edge="1" source="s4" target="s5" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f5f" value="锁被占 → exit 64" style="edgeStyle=orthogonalEdgeStyle;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;fontSize=10;fontColor=#b85450;" edge="1" source="s5" target="R" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="540" y="414" />
+              <mxPoint x="770" y="414" />
+              <mxPoint x="770" y="680" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="f6" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;" edge="1" source="s5" target="s6" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f6n" value="否（全部完成）" style="edgeStyle=orthogonalEdgeStyle;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;html=1;fontSize=10;" edge="1" source="s6" target="s6n" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f7" value="是" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;fontSize=10;" edge="1" source="s6" target="s7" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f7f" value="stage=preflight&lt;br&gt;分支不匹配（runner 绝不切分支）" style="edgeStyle=orthogonalEdgeStyle;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;html=1;fontSize=10;fontColor=#b85450;" edge="1" source="s7" target="R" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f8" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;" edge="1" source="s7" target="s8" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f89" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;" edge="1" source="s8" target="s9" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f9f" value="是：终止阶梯&lt;br&gt;stage=agent category=timeout" style="edgeStyle=orthogonalEdgeStyle;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;html=1;fontSize=10;fontColor=#b85450;" edge="1" source="s9" target="R" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f910" value="否" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;fontSize=10;" edge="1" source="s9" target="s10" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f10f" value="否：stderr 签名表分类&lt;br&gt;nonzero_exit / permission_denied / invalid_success&lt;br&gt;stage=agent" style="edgeStyle=orthogonalEdgeStyle;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;html=1;fontSize=10;fontColor=#b85450;" edge="1" source="s10" target="R" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f1011" value="是" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;fontSize=10;" edge="1" source="s10" target="s11" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="f11f" value="stage=checks&lt;br&gt;check_failed / check_timeout" style="edgeStyle=orthogonalEdgeStyle;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=1;entryDx=0;entryDy=0;html=1;fontSize=10;fontColor=#b85450;" edge="1" source="s11" target="R" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="600" y="984" />
+              <mxPoint x="600" y="840" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="f1112" value="是" style="edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;html=1;fontSize=10;" edge="1" source="s11" target="s12" parent="1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="floop" value="进入下一仓库" style="edgeStyle=orthogonalEdgeStyle;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;html=1;fontSize=10;" edge="1" source="s12" target="s6" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="200" y="1076" />
+              <mxPoint x="200" y="504" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
