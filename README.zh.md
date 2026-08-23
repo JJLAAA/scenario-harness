@@ -39,6 +39,58 @@ harness 把一次跨仓交付所需的知识分成四层，各有明确的归属
 
 知识摆放位置与执行协议是耦合的：规划与规格评审门禁、固定的状态词汇表、检查失败处理、中断安全协议，以及 helper CLI。scenario 概念回答的是*知识在哪里*；协议回答的是*执行如何保持安全、可恢复*。两者合起来，把"这一类跨仓交付应该怎么协调"从 Agent 每次现场重新摸索的东西，变成显式、预置、按协议执行的知识。
 
+## 设计架构
+
+上面的知识模型回答的是静态知识放在哪里;本节回答运行时结构。四类关注点分离到不同的工件,各有唯一归属和生命周期:
+
+```text
+scenario-harness/
+├── AGENTS.md / CLAUDE.md   # 协议层:门禁、状态词汇表、Spec 分层归属、YAML 语义
+├── bin/scenario-harness    # 机制层:单文件 Python CLI——只做机械校验,绝不编辑业务仓库
+├── scenarios/<name>/       # 加速器:预声明拓扑(scenario.yaml + README SOP),每类重复任务一份
+├── repos.yaml              # 加速器:工作区注册表 + 基线依赖图——只为候选圈定提供起点,不排序、不 gate
+├── templates/              # 四个任务文件的声明式 schema;check-task 的必备章节基准运行时从骨架提取
+├── tasks/<task-id>/        # 状态层:spec / status / validation / decisions——每次运行的恢复点
+└── docs/                   # 设计文档、Goal Contract、架构图
+```
+
+scenario 与 registry 图被有意设计为加速器而非权威:执行顺序只来自 scenario `order` 或任务声明拓扑,图边不 gate 任何行为,这两层再薄也不削弱门禁。这个架构真正的资产是双模式门禁流水线、规划/实现的上下文分工,以及作为会话外记忆的 task files。
+
+### 执行流水线
+
+两种入口收敛到同一条带门禁的流水线。规划在单一会话完成,保证跨仓判断连贯(摄取可委派给只读子代理,综合不可委派);实现按仓下放给在仓库目录内启动的子代理进程,仓内运行时机制(hooks、skills、MCP 注入)正常激活。
+
+```mermaid
+flowchart TB
+    S["场景任务<br/>(scenario.yaml 预声明拓扑)"]
+    F["自由任务<br/>(规划生成拓扑,Spec Review 批准)"]
+    S -->|"validate-scenario"| INIT
+    F -->|"validate-registry"| INIT
+    INIT["init-task [--free] → 四个任务文件"] --> PF["preflight:分支门 + git 状态"]
+    PF --> PL["规划(单一会话):<br/>跨仓 spec + 各仓 spec 条目"]
+    PL <-->|"planning_blocked → 用户"| U(("用户"))
+    PL --> G1{{"Planning Gate"}}
+    G1 --> SR["Spec Review<br/>(人工批准拓扑 + spec 条目 diff)"]
+    SR -->|"批准 / 显式跳过"| G2{{"Spec Review Gate"}}
+    G2 --> RUN
+    subgraph run["run:按声明顺序的确定性每仓链"]
+        R["仓内子代理:<br/>运行时对账 → 实现"] --> VD{"verdict ok?"}
+        VD -->|"缺失/非法/blocked"| STOP(["run 阻断"])
+        VD -->|"ok"| CK["仓库 checks"]
+        CK -->|"失败"| STOP
+        CK -->|"通过"| RC["repo_complete → 下一仓"]
+    end
+    RC --> DONE(["complete:门禁全记录,仓库全绿"])
+```
+
+fail-closed 行为与模式无关:
+
+- `run` 在 `status.md` 未记录两道门时拒绝启动(exit 2,`planning_gate_missing` / `spec_review_gate_missing`)。
+- 只有 exit 0 + 有效 `ok` verdict(`tasks/<task>/verdicts/<repo>.md`)+ checks 通过,仓库才算完成。
+- 实现中发现新的受影响仓库必须走 Replanning Protocol 并重新 Spec Review——绝不允许静默扩集。
+
+静态大图在 `docs/diagrams/`(`freeform-workspace.png`、`run-architecture.png`);`run` 层细节见 [`docs/subprocess-agent-run.md`](docs/subprocess-agent-run.md)。
+
 ## 声明式协调
 
 这个 harness 是有意选择声明式的：预制协议优先于 Agent 探索。`instruction_sources` 和 `key_files` 不是仓库知识的完整地图，而是"最低保证阅读清单"——是下限，不是上限：
