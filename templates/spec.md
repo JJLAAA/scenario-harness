@@ -1,5 +1,9 @@
 # Task Spec
 
+## Task Mode
+
+<!-- `scenario:<name>` or `free`, matching the Mode line in status.md. Tasks without this section are interpreted as scenario tasks. -->
+
 ## Scenario
 
 <!-- Scenario directory name under scenarios/. -->

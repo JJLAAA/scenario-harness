@@ -447,6 +447,51 @@ def validate_dependency_metadata(
                     )
 
 
+def scenario_registry_crosscheck(
+    root: Path, scenario: str, scenario_data: dict[str, Any], findings: list[Finding]
+) -> None:
+    """Q3-B: warning-level drift signal between this scenario and repos.yaml.
+
+    Scenario self-containment is unchanged: the registry never gates scenario
+    execution, and an absent registry produces no findings at all.
+    """
+
+    registry_file = root / REGISTRY_FILE_NAME
+    if not registry_file.exists():
+        return
+    try:
+        registry = load_yaml(registry_file)
+    except HarnessError as exc:
+        findings.append(
+            Finding(
+                "warning",
+                "registry_unreadable",
+                f"repos.yaml could not be read for the consistency cross-check: {exc}",
+                "Fix repos.yaml or remove it; scenario validation itself does not depend on it.",
+            )
+        )
+        return
+    if not isinstance(registry, dict):
+        return
+    registry_repos_config = registry_repos(registry)
+    for repo_key, entry in scenario_repos(scenario_data).items():
+        if not isinstance(entry, dict):
+            continue
+        registry_entry = registry_repos_config.get(repo_key)
+        if not isinstance(registry_entry, dict):
+            findings.append(
+                repo_not_in_registry_finding(scenario, repo_key, "repos.yaml")
+            )
+            continue
+        diverged = intrinsic_field_divergences(repo_key, registry_entry, entry)
+        if diverged:
+            findings.append(
+                field_divergence_finding(
+                    repo_key, diverged, f"scenario '{scenario}'"
+                )
+            )
+
+
 def validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
     findings: list[Finding] = []
 
@@ -513,6 +558,7 @@ def validate_scenario(root: Path, scenario: str) -> dict[str, Any]:
         )
 
     validate_dependency_metadata(repos_config, order, findings)
+    scenario_registry_crosscheck(root, scenario, scenario_data, findings)
 
     selected = order or repos
     repo_reports: list[dict[str, Any]] = []
@@ -652,6 +698,334 @@ def scenario_context(root: Path, scenario: str) -> dict[str, Any]:
     }
 
 
+REGISTRY_FILE_NAME = "repos.yaml"
+REGISTRY_INTRINSIC_FIELDS = ("path", "description", "instruction_sources", "key_files", "checks")
+
+
+def load_registry(root: Path) -> dict[str, Any]:
+    data = load_yaml(root / REGISTRY_FILE_NAME)
+    if not isinstance(data, dict):
+        raise HarnessError(
+            f"Registry file must contain a mapping: {root / REGISTRY_FILE_NAME}"
+        )
+    return data
+
+
+def registry_repos(registry: dict[str, Any]) -> dict[str, Any]:
+    repos = registry.get("repos")
+    return repos if isinstance(repos, dict) else {}
+
+
+def intrinsic_field_divergences(
+    repo_key: str, registry_entry: dict[str, Any], other_entry: dict[str, Any]
+) -> list[str]:
+    """Intrinsic fields declared on both sides that carry different values."""
+
+    diverged = []
+    for field in REGISTRY_INTRINSIC_FIELDS:
+        if field in registry_entry and field in other_entry:
+            if registry_entry[field] != other_entry[field]:
+                diverged.append(field)
+    return diverged
+
+
+def repo_not_in_registry_finding(
+    scenario: str, repo_key: str, registry_label: str
+) -> Finding:
+    return Finding(
+        "warning",
+        "repo_not_in_registry",
+        f"Scenario '{scenario}' declares repo '{repo_key}' which is not registered in {registry_label}.",
+        "Register the repo in repos.yaml under the same key as scenario.yaml so free-task tooling can see it, or confirm the exclusion.",
+    )
+
+
+def field_divergence_finding(
+    repo_key: str, diverged: list[str], other_label: str
+) -> Finding:
+    return Finding(
+        "warning",
+        "registry_field_divergence",
+        f"repos.{repo_key} {'/'.join(sorted(diverged))} in repos.yaml diverges from {other_label}.",
+        "Keep intrinsic fields identical in both files, or drop them from one side, so drift stays observable.",
+    )
+
+
+def registry_scenario_crosscheck(
+    root: Path, registry: dict[str, Any], findings: list[Finding]
+) -> list[dict[str, Any]]:
+    """Q4-a static consistency: scenario repo keys and fields vs registry.
+
+    Warning level only. The registry is an accelerator, never authority:
+    mismatches make drift observable but never gate scenario execution.
+    """
+
+    scenarios_root = root / "scenarios"
+    if not scenarios_root.exists():
+        return []
+    registry_repos_config = registry_repos(registry)
+    repo_keys = set(registry_repos_config)
+    summaries: list[dict[str, Any]] = []
+    for scenario_dir in sorted(scenarios_root.iterdir()):
+        scenario_file = scenario_dir / "scenario.yaml"
+        if not scenario_dir.is_dir() or not scenario_file.exists():
+            continue
+        try:
+            scenario_data = load_yaml(scenario_file)
+        except HarnessError:
+            continue  # scenario-side validation owns scenario errors
+        if not isinstance(scenario_data, dict):
+            continue
+        summary: dict[str, Any] = {
+            "scenario": scenario_dir.name,
+            "missing_repos": [],
+            "divergent_repos": {},
+        }
+        for repo_key, entry in scenario_repos(scenario_data).items():
+            if not isinstance(entry, dict):
+                continue
+            registry_entry = registry_repos_config.get(repo_key)
+            if not isinstance(registry_entry, dict):
+                summary["missing_repos"].append(repo_key)
+                findings.append(
+                    repo_not_in_registry_finding(scenario_dir.name, repo_key, "repos.yaml")
+                )
+                continue
+            diverged = intrinsic_field_divergences(repo_key, registry_entry, entry)
+            if diverged:
+                summary["divergent_repos"][repo_key] = diverged
+                findings.append(
+                    field_divergence_finding(
+                        repo_key, diverged, f"scenario '{scenario_dir.name}'"
+                    )
+                )
+        summaries.append(summary)
+    return summaries
+
+
+def validate_registry_edges(
+    registry: dict[str, Any], repos: dict[str, Any], findings: list[Finding]
+) -> list[dict[str, Any]]:
+    edges = registry.get("edges")
+    if edges is None:
+        return []
+    if not isinstance(edges, list):
+        findings.append(
+            Finding(
+                "error",
+                "invalid_edges",
+                "repos.yaml 'edges' must be a list of edge mappings when present.",
+                "Use list items with from, to, and evidence fields.",
+            )
+        )
+        return []
+
+    reports: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for index, edge in enumerate(edges):
+        path = f"edges[{index}]"
+        if not isinstance(edge, dict):
+            findings.append(
+                Finding(
+                    "error",
+                    "invalid_edge",
+                    f"{path} must be a mapping.",
+                    "Use a mapping such as '- from: consumer-repo'.",
+                )
+            )
+            continue
+
+        for field in sorted(set(edge) & TASK_SPECIFIC_DEPENDENCY_FIELDS):
+            findings.append(
+                Finding(
+                    "error",
+                    "task_specific_dependency_field",
+                    f"{path}.{field} is task-specific and must not be declared in repos.yaml.",
+                    "Remove the field; task-level values live in the task files.",
+                )
+            )
+
+        source = edge.get("from")
+        target = edge.get("to")
+        evidence = edge.get("evidence")
+        for key in ("from", "to"):
+            if not non_empty_string(edge.get(key)):
+                findings.append(
+                    Finding(
+                        "error",
+                        "invalid_edge",
+                        f"{path}.{key} must be a non-empty string.",
+                        f"Set {path}.{key} to a repo key declared under repos.",
+                    )
+                )
+        if not non_empty_string(evidence):
+            findings.append(
+                Finding(
+                    "error",
+                    "invalid_edge_evidence",
+                    f"{path}.evidence must be a non-empty string.",
+                    "Cite how the dependency is observable (manifest line, import, generated-code source). Evidence text is never parsed for semantics.",
+                )
+            )
+
+        report: dict[str, Any] = {
+            "from": source if isinstance(source, str) else None,
+            "to": target if isinstance(target, str) else None,
+        }
+        if non_empty_string(source) and non_empty_string(target):
+            if source == target:
+                findings.append(
+                    Finding(
+                        "error",
+                        "edge_self",
+                        f"{path} references the same repo on both ends.",
+                        "Remove self-edges; repo-local relationships stay in repo-local documentation.",
+                    )
+                )
+            else:
+                for key, endpoint in (("from", source), ("to", target)):
+                    if endpoint not in repos:
+                        findings.append(
+                            Finding(
+                                "error",
+                                "edge_endpoint_unknown",
+                                f"{path}.{key} references unknown repo '{endpoint}'.",
+                                "Reference a repo key declared under repos.yaml repos.",
+                            )
+                        )
+                pair = (source, target)
+                if pair in seen:
+                    findings.append(
+                        Finding(
+                            "error",
+                            "duplicate_edge",
+                            f"edges contains duplicate pair '{source}' -> '{target}'.",
+                            "(from, to) is the natural key; declare each pair once.",
+                        )
+                    )
+                seen.add(pair)
+        reports.append(report)
+    return reports
+
+
+def validate_registry(root: Path) -> dict[str, Any]:
+    findings: list[Finding] = []
+    registry_file = root / REGISTRY_FILE_NAME
+    if not registry_file.exists():
+        raise HarnessError(
+            f"Required file is missing: {registry_file}", EXIT_VALIDATION
+        )
+
+    registry = load_registry(root)
+    repos = registry_repos(registry)
+
+    if not repos:
+        findings.append(
+            Finding(
+                "error",
+                "invalid_repos",
+                "repos.yaml must include a non-empty 'repos' mapping.",
+                "Add repos.<repo-key> entries with path and the repo's intrinsic fields.",
+            )
+        )
+
+    repo_reports: list[dict[str, Any]] = []
+    for repo_key, repo_entry in repos.items():
+        repo_report: dict[str, Any] = {"key": repo_key}
+        if not isinstance(repo_entry, dict):
+            findings.append(
+                Finding(
+                    "error",
+                    "invalid_repo_entry",
+                    f"repos.{repo_key} must be a mapping.",
+                    "Use a mapping with path and the repo's intrinsic fields.",
+                )
+            )
+            repo_reports.append(repo_report)
+            continue
+
+        for field in sorted(set(repo_entry) & TASK_SPECIFIC_DEPENDENCY_FIELDS):
+            findings.append(
+                Finding(
+                    "error",
+                    "task_specific_dependency_field",
+                    f"repos.{repo_key}.{field} is task-specific and must not be declared in repos.yaml.",
+                    "Ask a human to confirm this value for the task, then record it in the task files.",
+                )
+            )
+
+        raw_path = repo_entry.get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            findings.append(
+                Finding(
+                    "error",
+                    "missing_repo_path",
+                    f"repos.{repo_key}.path must be a non-empty string.",
+                    f"Set repos.{repo_key}.path to the local repository path.",
+                )
+            )
+        else:
+            try:
+                resolved_path = resolve_harness_path(root, raw_path)
+                repo_report["path"] = str(resolved_path)
+                if not resolved_path.exists():
+                    findings.append(
+                        Finding(
+                            "error",
+                            "repo_path_missing",
+                            f"Repo path does not exist for '{repo_key}': {resolved_path}",
+                            "Clone or move the repository, or update repos.yaml.",
+                        )
+                    )
+                elif not (resolved_path / ".git").exists():
+                    findings.append(
+                        Finding(
+                            "warning",
+                            "repo_path_not_git",
+                            f"Repo path for '{repo_key}' does not contain .git: {resolved_path}",
+                            "Confirm the path points at the repository root.",
+                        )
+                    )
+            except HarnessError as exc:
+                findings.append(
+                    Finding(
+                        "error",
+                        "invalid_repo_path",
+                        str(exc),
+                        f"Use an absolute path or a path relative to {root}.",
+                    )
+                )
+
+        for field in ("instruction_sources", "key_files", "checks"):
+            value = repo_entry.get(field)
+            if value is not None and (
+                not isinstance(value, list)
+                or not all(isinstance(item, str) for item in value)
+            ):
+                findings.append(
+                    Finding(
+                        "error",
+                        f"invalid_{field}",
+                        f"repos.{repo_key}.{field} must be a list of strings when present.",
+                        f"Use YAML list items under repos.{repo_key}.{field}.",
+                    )
+                )
+        repo_reports.append(repo_report)
+
+    edge_reports = validate_registry_edges(registry, repos, findings)
+    scenarios = registry_scenario_crosscheck(root, registry, findings)
+
+    status = "ok" if not any(item.level == "error" for item in findings) else "error"
+    return {
+        "status": status,
+        "registry_file": str(registry_file),
+        "repos": repo_reports,
+        "edges": edge_reports,
+        "scenarios": scenarios,
+        "findings": [item.to_dict() for item in findings],
+    }
+
+
 def markdown_list(items: list[str], empty: str = "None.") -> str:
     if not items:
         return empty
@@ -754,6 +1128,149 @@ def read_task_branches(task_dir: Path) -> dict[str, str]:
     return branches
 
 
+def parse_task_mode(status_text: str) -> str | None:
+    """Return 'free', 'scenario:<name>', or None for legacy task files.
+
+    Legacy files without a mode line are interpreted as scenario tasks by the
+    caller; the harness never writes a task without a mode line anymore.
+    """
+
+    text = strip_marked_blocks(status_text)
+    match = re.search(
+        r"^mode\s*[:\-]\s*`?(free|scenario:[A-Za-z0-9_-]+)`?\s*$",
+        text,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if not match:
+        return None
+    value = match.group(1).lower()
+    return "free" if value == "free" else f"scenario:{value.split(':', 1)[1]}"
+
+
+def read_task_mode(task_dir: Path) -> tuple[str | None, str | None]:
+    """Return (kind, scenario): ('free', None), ('scenario', name), or (None, None)."""
+
+    status_file = task_dir / "status.md"
+    if not status_file.exists():
+        return (None, None)
+    status_text = status_file.read_text(encoding="utf-8")
+    mode = parse_task_mode(status_text)
+    if mode == "free":
+        return ("free", None)
+    if mode and mode.startswith("scenario:"):
+        return ("scenario", mode.split(":", 1)[1])
+    text = strip_marked_blocks(status_text)
+    match = re.search(
+        r"^scenario\s*[:\-]\s*`?([A-Za-z0-9_-]+)`?",
+        text,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if match and match.group(1).lower() != "none":
+        return ("scenario", match.group(1))
+    return (None, None)
+
+
+def read_task_repo_rows(task_dir: Path) -> list[tuple[str, str | None]]:
+    """Ordered (repo key, expected branch or None) rows from the per-repo table.
+
+    For free tasks the row order is the task-declared execution order consumed
+    by preflight, checks, and run.
+    """
+
+    status_file = task_dir / "status.md"
+    if not status_file.exists():
+        return []
+    text = strip_marked_blocks(status_file.read_text(encoding="utf-8"))
+    rows: list[tuple[str, str | None]] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        if not line.startswith("|") or "---" in line or "Repo" in line:
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 3:
+            continue
+        repo_key = re.sub(r"^`|`$", "", cells[0])
+        branch = re.sub(r"^`|`$", "", cells[2])
+        if not repo_key or repo_key in seen:
+            continue
+        seen.add(repo_key)
+        rows.append(
+            (repo_key, branch if branch and branch not in {"-", "TBD"} else None)
+        )
+    return rows
+
+
+def read_task_branch_defaults(task_dir: Path) -> dict[str, Any]:
+    """Branch expectations recorded by init-task --free before repos are known."""
+
+    status_file = task_dir / "status.md"
+    if not status_file.exists():
+        return {"default": None, "overrides": {}}
+    text = strip_marked_blocks(status_file.read_text(encoding="utf-8"))
+    default = None
+    match = re.search(
+        r"default expected branch\s*[:\-]\s*`?([^\s`]+)`?", text, re.IGNORECASE
+    )
+    if match:
+        default = match.group(1)
+    overrides: dict[str, str] = {}
+    for repo, branch in re.findall(r"-\s*`([A-Za-z0-9_.-]+)`\s*=\s*`([^\s`]+)`", text):
+        overrides[repo] = branch
+    return {"default": default, "overrides": overrides}
+
+
+def free_task_context(root: Path, task_dir: Path) -> dict[str, Any]:
+    """Context for a free task: task-declared topology resolved against repos.yaml.
+
+    This is the free-task sibling of scenario_context. Everything downstream
+    (prompt rendering, branch gates, verdicts, checks) consumes the same shape
+    and does not care where the context came from.
+    """
+
+    registry = load_registry(root)
+    repos_config = registry_repos(registry)
+    rows = read_task_repo_rows(task_dir)
+    if not rows:
+        raise HarnessError(
+            "Free task declares no repositories in the status.md per-repo table. "
+            "The Planning Pass must fill the table (row order = execution order) "
+            "before the task can run.",
+            EXIT_VALIDATION,
+        )
+    entries: list[dict[str, Any]] = []
+    for repo_key, _branch in rows:
+        repo_entry = repos_config.get(repo_key)
+        if not isinstance(repo_entry, dict):
+            raise HarnessError(
+                f"Task declares repo '{repo_key}' which is not registered in repos.yaml.",
+                EXIT_VALIDATION,
+            )
+        raw_path = repo_entry.get("path")
+        resolved_path = None
+        if isinstance(raw_path, str) and raw_path:
+            resolved_path = str(resolve_harness_path(root, raw_path))
+        entries.append(
+            {
+                "key": repo_key,
+                "path": resolved_path,
+                "role": None,
+                "description": repo_entry.get("description"),
+                "outputs": [],
+                "depends_on": [],
+                "instruction_sources": repo_entry.get("instruction_sources") or [],
+                "key_files": repo_entry.get("key_files") or [],
+                "checks": repo_entry.get("checks") or [],
+            }
+        )
+    return {
+        "scenario": "free",
+        "mode": "free",
+        "scenario_dir": None,
+        "description": "",
+        "repos": entries,
+    }
+
+
 def resolve_task_dir(root: Path, raw_task: str) -> Path:
     path = Path(raw_task)
     if path.is_absolute():
@@ -795,10 +1312,15 @@ def upsert_marked_block(path: Path, marker: str, content: str) -> None:
 
 
 def collect_preflight(
-    root: Path, scenario: str, expected_branches: dict[str, str] | None = None
+    root: Path,
+    scenario: str,
+    expected_branches: dict[str, str] | None = None,
+    context: dict[str, Any] | None = None,
+    validation: dict[str, Any] | None = None,
+    path_source: str = "scenario.yaml",
 ) -> dict[str, Any]:
-    validation = validate_scenario(root, scenario)
-    context = scenario_context(root, scenario)
+    validation = validation if validation is not None else validate_scenario(root, scenario)
+    context = context if context is not None else scenario_context(root, scenario)
     findings: list[Finding] = []
     repo_results: list[dict[str, Any]] = []
     expected_branches = expected_branches or {}
@@ -828,7 +1350,7 @@ def collect_preflight(
                     "error",
                     "repo_path_missing",
                     message,
-                    "Fix scenario.yaml path before entry.",
+                    f"Fix {path_source} path before entry.",
                 )
             )
             repo_results.append(result)
@@ -984,31 +1506,47 @@ Generated: `{report["generated_at"]}`
 
 
 def collect_task_list(
-    root: Path, scenario: str, incomplete_only: bool
+    root: Path,
+    scenario: str | None,
+    incomplete_only: bool,
+    all_modes: bool = False,
 ) -> dict[str, Any]:
     tasks_root = root / "tasks"
     tasks: list[dict[str, Any]] = []
     if not tasks_root.exists():
-        return {"scenario": scenario, "tasks_root": str(tasks_root), "tasks": []}
+        return {
+            "scenario": scenario,
+            "filter": scenario or ("all" if all_modes else "free"),
+            "tasks_root": str(tasks_root),
+            "tasks": [],
+        }
 
     for path in sorted(tasks_root.iterdir()):
         if not path.is_dir():
             continue
         status_file = path / "status.md"
         spec_file = path / "spec.md"
-        haystack = path.name
-        for file_path in (status_file, spec_file):
-            if file_path.exists():
-                try:
-                    haystack += "\n" + file_path.read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    pass
-        if scenario not in haystack:
-            continue
-
         status_text = (
             status_file.read_text(encoding="utf-8") if status_file.exists() else ""
         )
+        mode = parse_task_mode(status_text)
+        if scenario:
+            if mode:
+                if mode != f"scenario:{scenario}":
+                    continue
+            else:
+                haystack = path.name
+                for file_path in (status_file, spec_file):
+                    if file_path.exists():
+                        try:
+                            haystack += "\n" + file_path.read_text(encoding="utf-8")
+                        except UnicodeDecodeError:
+                            pass
+                if scenario not in haystack:
+                    continue
+        elif not all_modes and mode != "free":
+            continue
+
         lowered = status_text.lower()
         state = (
             "complete"
@@ -1023,6 +1561,7 @@ def collect_task_list(
             {
                 "task_id": path.name,
                 "path": str(path),
+                "mode": mode,
                 "state": state,
                 "mtime": dt.datetime.fromtimestamp(path.stat().st_mtime).isoformat(
                     timespec="seconds"
@@ -1034,7 +1573,12 @@ def collect_task_list(
             }
         )
     tasks.sort(key=lambda item: item["mtime"], reverse=True)
-    return {"scenario": scenario, "tasks_root": str(tasks_root), "tasks": tasks}
+    return {
+        "scenario": scenario,
+        "filter": scenario or ("all" if all_modes else "free"),
+        "tasks_root": str(tasks_root),
+        "tasks": tasks,
+    }
 
 
 def check_matrix(
@@ -1209,6 +1753,12 @@ def render_task_files(
 
     spec = f"""# Task Spec
 
+## Task Mode
+
+Mode: `scenario:{context["scenario"]}`
+
+Selected via the Task Mode Selection Protocol: the request matches this declared scenario.
+
 ## Scenario
 
 `{context["scenario"]}`
@@ -1267,6 +1817,8 @@ None.
 """
 
     status = f"""# Status
+
+Mode: `scenario:{context["scenario"]}`
 
 Scenario: `{context["scenario"]}`
 
@@ -1329,6 +1881,175 @@ TBD after checks run.
 ## Notes
 
 - Generated by `bin/scenario-harness init-task`.
+"""
+
+    return {
+        "spec.md": spec,
+        "status.md": status,
+        "validation.md": validation,
+        "decisions.md": decisions,
+    }
+
+
+def render_free_task_files(
+    task_id: str,
+    request: str,
+    shared_branch: str,
+    overrides: dict[str, str],
+) -> dict[str, str]:
+    override_lines = (
+        "\n".join(f"- `{repo}` = `{branch}`" for repo, branch in sorted(overrides.items()))
+        or "- none"
+    )
+
+    spec = f"""# Task Spec
+
+## Task Mode
+
+Mode: `free`
+
+Selection reason: TBD — record why this request runs as a free task (no matching scenario, explicitly one-off, or user choice per the Task Mode Selection Protocol).
+
+## User Request
+
+{request or "TBD."}
+
+## User Clarifications
+
+Record any user clarification that affects goals, scope, implementation, validation, risks, or delivery order before continuing implementation.
+
+- None yet.
+
+## Scope
+
+TBD — determined by the Planning Pass after candidate scoping.
+
+## Non-Goals
+
+- Do not commit unless explicitly requested.
+- Do not edit repositories outside the task-declared topology.
+- Do not overwrite unrelated local changes.
+
+## Assumptions
+
+- `repos.yaml` is the workspace registry for repo paths, instruction sources, key files, and checks.
+- This task's status.md is authoritative for expected task branches and declared execution order.
+- Repository-local instructions remain authoritative inside each business repository.
+
+## Task-Declared Topology
+
+TBD — after the Planning Pass, replace with the affected repos in declared execution order (must match the status.md per-repo table row order):
+
+1. `TBD`
+
+## Candidate Scoping
+
+TBD — record the candidate repo set and each candidate's provenance (user-named, baseline-graph edge evidence, or workspace scan), plus exclusion reasons for candidates not selected. Direction rule: when changing repo X, always check X's in-edge neighbors (repos consuming X's outputs); include out-edge upstreams only when the request itself requires upstream changes; never traverse out-edges only. Single-repo adjudication additionally requires the workspace-level reverse lookup over all registered repos (see AGENTS.md Free Task Protocol).
+
+## Dependency Readiness
+
+TBD — initialize from the task-level dependency edges produced by the Planning Pass.
+
+## Repository Context
+
+TBD — per-repo entries (path, instruction sources, key files, checks) resolved from repos.yaml by the Planning Pass.
+
+## Key File Implementation Notes
+
+Before editing code in each repository, enrich this section with concrete implementation notes, expected impact areas, risks, and validation focus.
+
+- Pending key file review.
+
+## Steps
+
+| Step | Repo | Action | Status |
+| --- | --- | --- | --- |
+| 1 | all | Candidate scoping + Planning Pass + repo-local spec entries | pending |
+| 2 | all | Spec Review Gate | pending |
+| 3 | per repo | Runtime reconciliation, implement, checks (declared order) | pending |
+
+## Open Questions
+
+None.
+"""
+
+    status = f"""# Status
+
+Mode: `free`
+
+Scenario: none (free task)
+
+Task ID: `{task_id}`
+
+Default expected branch: `{shared_branch}`
+
+Per-repo branch overrides:
+{override_lines}
+
+## Repositories
+
+The Planning Pass fills this table; row order is the task-declared execution order consumed by `run`.
+
+| Repo | Status | Expected Branch | Actual Branch | Checks |
+| --- | --- | --- | --- | --- |
+
+## Current Step
+
+Task initialized. Next step: candidate scoping from repos.yaml, then the Planning Pass before entering business repositories.
+
+## Dependency Readiness
+
+TBD — initialize from the task-level dependency edges produced by the Planning Pass.
+
+## Blockers
+
+None.
+
+## Notes
+
+- Generated by `bin/scenario-harness init-task --free`.
+- Repos without declared checks in repos.yaml must record a validation gap in validation.md.
+"""
+
+    validation = f"""# Validation Report
+
+## Branch Gates
+
+Default expected branch: `{shared_branch}` (per-repo rows are added by the Planning Pass).
+
+| Repo | Expected Branch | Actual Branch | Result |
+| --- | --- | --- | --- |
+
+## Repo-Local Checks
+
+| Repo | Command | Result | Notes |
+| --- | --- | --- | --- |
+| TBD | TBD | pending | Checks come from repos.yaml; repos without declared checks must record a validation gap. |
+
+## Known Failures
+
+None.
+
+## Residual Risk
+
+TBD after checks run.
+"""
+
+    decisions = f"""# Decisions
+
+## Accepted
+
+| Date | Decision | Reason | Impact |
+| --- | --- | --- | --- |
+
+## Rejected
+
+| Date | Option | Reason Rejected |
+| --- | --- | --- |
+
+## Notes
+
+- Generated by `bin/scenario-harness init-task --free`.
 """
 
     return {
@@ -1430,15 +2151,19 @@ def print_plan_report(report: dict[str, Any]) -> None:
 
 
 def print_task_list(report: dict[str, Any]) -> None:
-    print(f"scenario: {report['scenario']}")
+    if report.get("scenario"):
+        print(f"scenario: {report['scenario']}")
+    else:
+        print(f"filter: {report.get('filter') or 'free'}")
     print(f"tasks_root: {report['tasks_root']}")
     if not report["tasks"]:
         print("tasks: none")
         return
     print("tasks:")
     for task in report["tasks"]:
+        mode = task.get("mode") or "-"
         print(
-            f"- {task['task_id']} state={task['state']} mtime={task['mtime']} path={task['path']}"
+            f"- {task['task_id']} mode={mode} state={task['state']} mtime={task['mtime']} path={task['path']}"
         )
 
 
@@ -1468,6 +2193,49 @@ def print_check_results(report: dict[str, Any]) -> None:
             print(f"  stderr_tail: {item['stderr_tail'].splitlines()[-1]}")
 
 
+def print_registry_report(report: dict[str, Any]) -> None:
+    print(f"registry_file: {report['registry_file']}")
+    print(f"status: {report['status']}")
+    print("")
+    print("repos:")
+    for repo in report["repos"]:
+        line = f"- {repo['key']}"
+        if repo.get("path"):
+            line += f" path={repo['path']}"
+        print(line)
+    print("")
+    if report.get("edges"):
+        print("edges:")
+        for edge in report["edges"]:
+            print(f"- {edge.get('from') or 'TBD'} -> {edge.get('to') or 'TBD'}")
+        print("")
+    if report.get("scenarios"):
+        print("scenario_crosscheck:")
+        for summary in report["scenarios"]:
+            line = f"- {summary['scenario']}: ok"
+            if summary["missing_repos"]:
+                line = (
+                    f"- {summary['scenario']}: missing repos "
+                    + ", ".join(summary["missing_repos"])
+                )
+            if summary["divergent_repos"]:
+                diverged = "; ".join(
+                    f"{key} ({'/'.join(fields)})"
+                    for key, fields in sorted(summary["divergent_repos"].items())
+                )
+                line += f"; divergent {diverged}"
+            print(line)
+        print("")
+    if report["findings"]:
+        print("findings:")
+        for finding in report["findings"]:
+            print(f"- [{finding['level']}] {finding['code']}: {finding['message']}")
+            if finding.get("fix"):
+                print(f"  fix: {finding['fix']}")
+    else:
+        print("findings: none")
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     root = harness_root()
     report = validate_scenario(root, args.scenario)
@@ -1478,38 +2246,100 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return EXIT_OK if report["status"] == "ok" else EXIT_VALIDATION
 
 
+def cmd_validate_registry(args: argparse.Namespace) -> int:
+    root = harness_root()
+    report = validate_registry(root)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print_registry_report(report)
+    return EXIT_OK if report["status"] == "ok" else EXIT_VALIDATION
+
+
 def cmd_init_task(args: argparse.Namespace) -> int:
     root = harness_root()
-    validation = validate_scenario(root, args.scenario)
-    if validation["status"] != "ok" and not args.allow_invalid:
-        result = {
-            "status": "error",
-            "scenario": args.scenario,
-            "message": "Scenario validation failed; task files were not created.",
-            "fix": "Fix validation findings or pass --allow-invalid to create recovery files anyway.",
-            "findings": validation["findings"],
-        }
-        if args.json:
-            print(json.dumps(result, indent=2, sort_keys=True))
-        else:
-            print(
-                "error: Scenario validation failed; task files were not created.",
-                file=sys.stderr,
-            )
-            print(
-                "fix: Fix validation findings or pass --allow-invalid to create recovery files anyway.",
-                file=sys.stderr,
-            )
-        return EXIT_VALIDATION
 
-    context = scenario_context(root, args.scenario)
-    task_id = args.task_id or f"{dt.date.today().isoformat()}-{args.scenario}"
-    shared_branch = args.branch or f"scenario/{task_id}"
-    branches = task_branch_map(
-        context, shared_branch, parse_branch_overrides(args.repo_branch)
-    )
-    task_dir = root / "tasks" / task_id
-    files = render_task_files(context, task_id, args.request or "", branches)
+    if not args.free and not args.scenario:
+        raise HarnessError(
+            "init-task requires a scenario, or pass --free for a free task.", EXIT_USAGE
+        )
+
+    mode_value: str
+    scenario_label: str | None = None
+    if args.free:
+        if args.scenario and args.task_id:
+            raise HarnessError(
+                "init-task --free takes exactly one task id argument.", EXIT_USAGE
+            )
+        # With two optional positionals argparse fills the scenario slot first,
+        # so a single bare argument is the task id whichever slot it landed in.
+        free_task_id = args.task_id or args.scenario
+        if not free_task_id:
+            raise HarnessError(
+                "init-task --free requires a task id such as 2026-08-23-short-topic.",
+                EXIT_USAGE,
+            )
+        validation = validate_registry(root)
+        if validation["status"] != "ok" and not args.allow_invalid:
+            result = {
+                "status": "error",
+                "scenario": None,
+                "mode": "free",
+                "message": "Registry validation failed; task files were not created.",
+                "fix": "Fix validate-registry findings or pass --allow-invalid to create recovery files anyway.",
+                "findings": validation["findings"],
+            }
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print(
+                    "error: Registry validation failed; task files were not created.",
+                    file=sys.stderr,
+                )
+                print(
+                    "fix: Fix validate-registry findings or pass --allow-invalid to create recovery files anyway.",
+                    file=sys.stderr,
+                )
+            return EXIT_VALIDATION
+        task_id = free_task_id
+        shared_branch = args.branch or f"scenario/{task_id}"
+        overrides = parse_branch_overrides(args.repo_branch)
+        task_dir = root / "tasks" / task_id
+        files = render_free_task_files(task_id, args.request or "", shared_branch, overrides)
+        mode_value = "free"
+    else:
+        validation = validate_scenario(root, args.scenario)
+        if validation["status"] != "ok" and not args.allow_invalid:
+            result = {
+                "status": "error",
+                "scenario": args.scenario,
+                "mode": f"scenario:{args.scenario}",
+                "message": "Scenario validation failed; task files were not created.",
+                "fix": "Fix validation findings or pass --allow-invalid to create recovery files anyway.",
+                "findings": validation["findings"],
+            }
+            if args.json:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print(
+                    "error: Scenario validation failed; task files were not created.",
+                    file=sys.stderr,
+                )
+                print(
+                    "fix: Fix validation findings or pass --allow-invalid to create recovery files anyway.",
+                    file=sys.stderr,
+                )
+            return EXIT_VALIDATION
+        context = scenario_context(root, args.scenario)
+        task_id = args.task_id or f"{dt.date.today().isoformat()}-{args.scenario}"
+        shared_branch = args.branch or f"scenario/{task_id}"
+        branches = task_branch_map(
+            context, shared_branch, parse_branch_overrides(args.repo_branch)
+        )
+        task_dir = root / "tasks" / task_id
+        files = render_task_files(context, task_id, args.request or "", branches)
+        mode_value = f"scenario:{args.scenario}"
+        scenario_label = args.scenario
 
     created: list[str] = []
     existing: list[str] = []
@@ -1534,7 +2364,8 @@ def cmd_init_task(args: argparse.Namespace) -> int:
     )
     result = {
         "status": status,
-        "scenario": args.scenario,
+        "scenario": scenario_label,
+        "mode": mode_value,
         "task_id": task_id,
         "task_dir": str(task_dir),
         "created": created,
@@ -1545,6 +2376,7 @@ def cmd_init_task(args: argparse.Namespace) -> int:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
         print(f"status: {status}")
+        print(f"mode: {mode_value}")
         print(f"task_dir: {task_dir}")
         if created:
             print("created:")
@@ -1560,13 +2392,55 @@ def cmd_init_task(args: argparse.Namespace) -> int:
 
 def cmd_preflight(args: argparse.Namespace) -> int:
     root = harness_root()
+
+    free_mode = False
+    label = args.scenario
+    context: dict[str, Any] | None = None
+    validation: dict[str, Any] | None = None
+    if not args.scenario:
+        if not args.task:
+            raise HarnessError(
+                "preflight requires a scenario, or --task for a task-driven preflight "
+                "(free tasks: repo set from the task declaration + registry).",
+                EXIT_USAGE,
+            )
+        mode_task_dir = resolve_task_dir(root, args.task)
+        kind, name = read_task_mode(mode_task_dir)
+        if kind == "free":
+            free_mode = True
+            label = "free"
+            validation = validate_registry(root)
+            context = free_task_context(root, mode_task_dir)
+        elif kind == "scenario" and name:
+            label = name
+        else:
+            raise HarnessError(
+                "Task does not record a usable `mode:` or `Scenario:` line in "
+                "status.md; pass a scenario explicitly.",
+                EXIT_USAGE,
+            )
+
     task_dir = resolve_task_dir(root, args.task) if args.task else None
     expected_branches = read_task_branches(task_dir) if task_dir else {}
+    if free_mode and task_dir is not None:
+        defaults = read_task_branch_defaults(task_dir)
+        for repo in context["repos"]:
+            if not expected_branches.get(repo["key"]):
+                fallback = defaults["overrides"].get(repo["key"]) or defaults["default"]
+                if fallback:
+                    expected_branches[repo["key"]] = fallback
     expected_branches.update(parse_branch_overrides(args.repo_branch))
     if args.branch:
-        context = scenario_context(root, args.scenario)
-        expected_branches = task_branch_map(context, args.branch, expected_branches)
-    report = collect_preflight(root, args.scenario, expected_branches)
+        map_context = context if context is not None else scenario_context(root, label)
+        expected_branches = task_branch_map(map_context, args.branch, expected_branches)
+    report = collect_preflight(
+        root,
+        label,
+        expected_branches,
+        context=context,
+        validation=validation,
+        path_source="repos.yaml" if free_mode else "scenario.yaml",
+    )
 
     if task_dir and not args.no_write:
         if not task_dir.exists():
@@ -1614,7 +2488,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
 def cmd_list_tasks(args: argparse.Namespace) -> int:
     root = harness_root()
-    report = collect_task_list(root, args.scenario, args.incomplete_only)
+    report = collect_task_list(root, args.scenario, args.incomplete_only, args.all)
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
@@ -1622,9 +2496,53 @@ def cmd_list_tasks(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def checks_matrix_from_context(
+    context: dict[str, Any], repo_filter: str | None = None
+) -> dict[str, Any]:
+    repos = []
+    for repo in context["repos"]:
+        if repo_filter and repo["key"] != repo_filter:
+            continue
+        repos.append(
+            {
+                "key": repo["key"],
+                "path": repo.get("path"),
+                "checks": repo.get("checks") or [],
+            }
+        )
+    if repo_filter and not repos:
+        raise HarnessError(
+            f"Task-declared repo set does not include repo '{repo_filter}'.",
+            EXIT_VALIDATION,
+        )
+    return {"scenario": context["scenario"], "repos": repos}
+
+
 def cmd_checks(args: argparse.Namespace) -> int:
     root = harness_root()
-    matrix = check_matrix(root, args.scenario, args.repo)
+    if args.scenario:
+        matrix = check_matrix(root, args.scenario, args.repo)
+    else:
+        if not args.task:
+            raise HarnessError(
+                "checks requires a scenario, or --task for a task-driven check "
+                "source (free tasks: checks from the registry).",
+                EXIT_USAGE,
+            )
+        task_dir_probe = resolve_task_dir(root, args.task)
+        kind, name = read_task_mode(task_dir_probe)
+        if kind == "free":
+            matrix = checks_matrix_from_context(
+                free_task_context(root, task_dir_probe), args.repo
+            )
+        elif kind == "scenario" and name:
+            matrix = check_matrix(root, name, args.repo)
+        else:
+            raise HarnessError(
+                "Task does not record a usable `mode:` or `Scenario:` line in "
+                "status.md; pass a scenario explicitly.",
+                EXIT_USAGE,
+            )
     if not args.run:
         if args.json:
             print(json.dumps(matrix, indent=2, sort_keys=True))
@@ -1749,6 +2667,514 @@ def task_gates_ready(task_dir: Path) -> dict[str, Any]:
         "spec_review_gate": "ready" if spec_ready else "missing",
         "current_step": current_step,
     }
+
+
+# --- check-task: structural lint of task files against the templates/ skeleton ---
+
+TASK_FILE_ORDER = ("spec.md", "status.md", "validation.md", "decisions.md")
+
+TEMPLATE_FILE_MAP = {
+    "spec.md": "spec.md",
+    "status.md": "task-status.md",
+    "validation.md": "validation-report.md",
+    "decisions.md": "decisions.md",
+}
+
+# Mode-ownership mapping stays in command code on purpose (it must not
+# propagate from templates/): template sections that only scenario tasks
+# require, and beyond-baseline sections that only free tasks require.
+SPEC_SCENARIO_ONLY_SECTIONS = ("Scenario", "Scenario Order")
+SPEC_FREE_ONLY_SECTIONS = ("Task-Declared Topology", "Candidate Scoping")
+
+GATE_SECTION_NAMES = ("Planning Gate", "Spec Review Gate")
+
+REPO_TABLE_COLUMNS = 5  # Repo | Status | Expected Branch | Actual Branch | Checks
+
+STATUS_STEP_VOCABULARY = frozenset(STATUS_STEP_RANK) | {"blocked"}
+
+SECTION_HEADING_RE = re.compile(r"^##\s+(.+?)\s*$")
+LINT_MODE_LINE_RE = re.compile(r"^mode\s*[:\-]\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+LINT_SCENARIO_LINE_RE = re.compile(
+    r"^scenario\s*[:\-]\s*`?([A-Za-z0-9_-]+)`?", re.IGNORECASE | re.MULTILINE
+)
+
+
+def status_step_valid(step: str) -> bool:
+    if step in STATUS_STEP_VOCABULARY:
+        return True
+    return bool(re.match(r"^(implementing|validating|repo_complete):\S+", step))
+
+
+def extract_markdown_sections(text: str) -> list[str]:
+    sections = []
+    for line in text.splitlines():
+        match = SECTION_HEADING_RE.match(line.strip())
+        if match:
+            sections.append(match.group(1).strip())
+    return sections
+
+
+def extract_section_body(text: str, heading: str) -> str | None:
+    """Body of the first section whose heading matches, or None when absent."""
+
+    heading_re = re.compile(
+        rf"^#{{1,6}}\s*{re.escape(heading)}\b\s*$", re.IGNORECASE
+    )
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if not heading_re.match(line.strip()):
+            continue
+        section: list[str] = []
+        for follow in lines[index + 1 :]:
+            if re.match(r"^#{1,6}\s+", follow.strip()):
+                break
+            section.append(follow)
+        return "\n".join(section)
+    return None
+
+
+def template_section_baseline(root: Path, findings: list[Finding]) -> dict[str, list[str]]:
+    """Extract the common-core section baseline from templates/ at runtime.
+
+    templates/ is the declarative schema source for task files: adding or
+    removing a template section changes what check-task requires on its next
+    run, with no code change.
+    """
+
+    templates_dir = root / "templates"
+    if not templates_dir.is_dir():
+        findings.append(
+            Finding(
+                "error",
+                "templates_missing",
+                f"Templates directory is missing: {templates_dir}",
+                "check-task derives its section baseline from templates/; restore the directory.",
+            )
+        )
+        return {}
+    baseline: dict[str, list[str]] = {}
+    for task_name in TASK_FILE_ORDER:
+        template_path = templates_dir / TEMPLATE_FILE_MAP[task_name]
+        if not template_path.is_file():
+            findings.append(
+                Finding(
+                    "error",
+                    "template_file_missing",
+                    f"Template file is missing: {template_path}",
+                    f"Restore templates/{TEMPLATE_FILE_MAP[task_name]}; it defines the required sections of {task_name}.",
+                )
+            )
+            continue
+        baseline[task_name] = extract_markdown_sections(
+            template_path.read_text(encoding="utf-8")
+        )
+    return baseline
+
+
+def classify_task_mode(status_text: str) -> tuple[str | None, str | None, str | None]:
+    """Lint view of the task mode: (kind, scenario name, raw mode value).
+
+    Unlike read_task_mode, an unparseable Mode value is surfaced as kind
+    'invalid' instead of silently falling back, so check-task can grade it as
+    a shape error. kind is 'free', 'scenario', 'invalid', or None.
+    """
+
+    text = strip_marked_blocks(status_text)
+    raw_value: str | None = None
+    match = LINT_MODE_LINE_RE.search(text)
+    if match:
+        candidate = match.group(1).strip().strip("`").strip()
+        if candidate.startswith("<!--"):
+            candidate = ""  # unfilled template placeholder
+        raw_value = candidate or None
+    if raw_value:
+        if raw_value.lower() == "free":
+            return ("free", None, raw_value)
+        scenario_match = re.match(r"^scenario:([A-Za-z0-9_-]+)$", raw_value, re.IGNORECASE)
+        if scenario_match:
+            return ("scenario", scenario_match.group(1), raw_value)
+        return ("invalid", None, raw_value)
+    legacy = LINT_SCENARIO_LINE_RE.search(text)
+    if legacy and legacy.group(1).lower() != "none":
+        return ("scenario", legacy.group(1), None)
+    return (None, None, None)
+
+
+def split_table_row(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def is_separator_row(cells: list[str]) -> bool:
+    return bool(cells) and all(re.fullmatch(r":?-+:?", cell) for cell in cells)
+
+
+def check_task_structure(root: Path, task_dir: Path) -> dict[str, Any]:
+    findings: list[Finding] = []
+    baseline = template_section_baseline(root, findings)
+
+    texts: dict[str, str] = {}
+    file_reports: list[dict[str, Any]] = []
+    for name in TASK_FILE_ORDER:
+        path = task_dir / name
+        entry: dict[str, Any] = {"name": name}
+        if path.is_file():
+            try:
+                texts[name] = path.read_text(encoding="utf-8")
+                entry["exists"] = True
+            except (OSError, UnicodeDecodeError) as exc:
+                entry["exists"] = False
+                findings.append(
+                    Finding(
+                        "error",
+                        "task_file_unreadable",
+                        f"Task file {name} could not be read: {exc}",
+                        "Restore the file or rerun init-task without overwriting existing files.",
+                    )
+                )
+        else:
+            entry["exists"] = False
+            findings.append(
+                Finding(
+                    "error",
+                    "missing_task_file",
+                    f"Required task file is missing: {path}",
+                    f"Create {name} from templates/{TEMPLATE_FILE_MAP[name]} or rerun init-task.",
+                )
+            )
+        file_reports.append(entry)
+
+    status_text = texts.get("status.md", "")
+    status_authored = strip_marked_blocks(status_text) if status_text else ""
+
+    kind, scenario_name, raw_mode = classify_task_mode(status_text)
+    mode_label: str | None = None
+    if kind == "free":
+        mode_label = "free"
+    elif kind == "scenario":
+        mode_label = f"scenario:{scenario_name}"
+    elif kind == "invalid":
+        findings.append(
+            Finding(
+                "error",
+                "mode_invalid",
+                f"Mode line value is neither `free` nor `scenario:<name>`: {raw_mode!r}.",
+                "Set Mode: `free` or Mode: `scenario:<scenario>` in status.md.",
+            )
+        )
+    if raw_mode is None:
+        # No Mode line at all: legacy task, interpreted via the Scenario: line
+        # (or plain scenario shape when that is absent too).
+        findings.append(
+            Finding(
+                "warning",
+                "mode_missing",
+                "status.md records no Mode line; interpreting the task as a scenario task (legacy compatibility).",
+                "Add Mode: `scenario:<name>` or Mode: `free` to status.md.",
+            )
+        )
+
+    scenario_file: Path | None = None
+    if kind == "scenario" and scenario_name:
+        scenario_file = root / "scenarios" / scenario_name / "scenario.yaml"
+        if not scenario_file.is_file():
+            findings.append(
+                Finding(
+                    "error",
+                    "mode_scenario_unknown",
+                    f"Mode references scenario '{scenario_name}' but {scenario_file} does not exist.",
+                    "Fix the Mode line or create the scenario directory.",
+                )
+            )
+
+    # --- required sections (baseline from templates/, adjusted by mode) ---
+    for entry in file_reports:
+        name = entry["name"]
+        required = list(baseline.get(name, []))
+        if name == "spec.md" and kind == "free":
+            required = [
+                section
+                for section in required
+                if section not in SPEC_SCENARIO_ONLY_SECTIONS
+            ] + list(SPEC_FREE_ONLY_SECTIONS)
+        entry["sections_required"] = len(required)
+        if name not in texts:
+            entry["sections_missing"] = required
+            continue
+        present = set(extract_markdown_sections(strip_marked_blocks(texts[name])))
+        missing = [section for section in required if section not in present]
+        entry["sections_missing"] = missing
+        for section in missing:
+            findings.append(
+                Finding(
+                    "error",
+                    "missing_section",
+                    f"{name} is missing required section '{section}'.",
+                    f"Add a '## {section}' section; templates/{TEMPLATE_FILE_MAP[name]} is the schema source.",
+                )
+            )
+
+    # --- status.md: current step, gates sections, per-repo table ---
+    current_step: str | None = None
+    gates: dict[str, str] = {heading: "missing" for heading in GATE_SECTION_NAMES}
+    repo_rows: list[dict[str, Any]] = []
+
+    if status_text:
+        current_step = read_current_step(status_authored)
+        if current_step is None:
+            findings.append(
+                Finding(
+                    "warning",
+                    "current_step_missing",
+                    "status.md does not record a `current step:` line yet.",
+                    "Set current step to a value from the AGENTS.md Status Step Vocabulary.",
+                )
+            )
+        elif not status_step_valid(current_step):
+            findings.append(
+                Finding(
+                    "error",
+                    "current_step_invalid",
+                    f"current step '{current_step}' is not in the Status Step Vocabulary.",
+                    "Use a step name from the AGENTS.md Status Step Vocabulary.",
+                )
+            )
+
+        for heading in GATE_SECTION_NAMES:
+            if extract_section_body(status_authored, heading) is not None:
+                gates[heading] = "present"
+            else:
+                findings.append(
+                    Finding(
+                        "warning",
+                        "gate_section_missing",
+                        f"status.md has no '{heading}' section yet.",
+                        f"Add a '## {heading}' section once the gate is decided (AGENTS.md requires it in status.md).",
+                    )
+                )
+
+        repositories_body = extract_section_body(status_authored, "Repositories")
+        if repositories_body is not None:
+            table_rows = [
+                split_table_row(line)
+                for line in repositories_body.splitlines()
+                if line.strip().startswith("|")
+            ]
+            if not table_rows:
+                findings.append(
+                    Finding(
+                        "error",
+                        "repo_table_missing",
+                        "The Repositories section of status.md contains no table.",
+                        "Add the per-repo status table with the columns from templates/task-status.md.",
+                    )
+                )
+            else:
+                header = table_rows[0]
+                if len(header) != REPO_TABLE_COLUMNS:
+                    findings.append(
+                        Finding(
+                            "error",
+                            "table_header_columns",
+                            f"Per-repo table header has {len(header)} cells, expected {REPO_TABLE_COLUMNS} (Repo | Status | Expected Branch | Actual Branch | Checks).",
+                            "Use the header from templates/task-status.md.",
+                        )
+                    )
+                for row in table_rows[1:]:
+                    if len(row) != len(header):
+                        findings.append(
+                            Finding(
+                                "error",
+                                "table_row_misaligned",
+                                f"Per-repo table row has {len(row)} cells while the header has {len(header)}: {' | '.join(row)}.",
+                                "Match the column count of the table header.",
+                            )
+                        )
+                data_rows = [row for row in table_rows[1:] if not is_separator_row(row)]
+                if not data_rows:
+                    findings.append(
+                        Finding(
+                            "warning",
+                            "repo_table_empty",
+                            "The per-repo table has no data rows yet.",
+                            "The Planning Pass fills the table; row order is the declared execution order.",
+                        )
+                    )
+                seen_keys: set[str] = set()
+                for row in data_rows:
+                    repo_key = re.sub(r"^`|`$", "", row[0]) if row else ""
+                    if not repo_key:
+                        findings.append(
+                            Finding(
+                                "error",
+                                "repo_cell_empty",
+                                "Per-repo table row has an empty repo cell.",
+                                "Set the repo key in the first column.",
+                            )
+                        )
+                        continue
+                    if repo_key in seen_keys:
+                        findings.append(
+                            Finding(
+                                "error",
+                                "repo_row_duplicate",
+                                f"Per-repo table declares repo '{repo_key}' more than once.",
+                                "Keep one row per repo; row order is the execution order.",
+                            )
+                        )
+                        continue
+                    seen_keys.add(repo_key)
+                    branch = row[2] if len(row) > 2 else ""
+                    if not branch or branch in {"-", "TBD"}:
+                        findings.append(
+                            Finding(
+                                "warning",
+                                "branch_unspecified",
+                                f"Repo '{repo_key}' has no expected branch recorded yet.",
+                                "The Planning Pass materializes per-repo branches from the task defaults.",
+                            )
+                        )
+                    repo_rows.append(
+                        {"key": repo_key, "branch": branch or None}
+                    )
+
+    # --- mode-aware: table rows must resolve to the mode's declaration layer ---
+    source_label: str | None = None
+    source_keys: set[str] | None = None
+    if kind == "free":
+        registry_file = root / REGISTRY_FILE_NAME
+        if registry_file.is_file():
+            try:
+                source_keys = set(registry_repos(load_registry(root)))
+                source_label = "repos.yaml"
+            except HarnessError as exc:
+                findings.append(
+                    Finding(
+                        "error",
+                        "repo_source_unreadable",
+                        f"repos.yaml could not be read to resolve table rows: {exc}",
+                        "Fix repos.yaml (validate-registry reports details).",
+                    )
+                )
+        else:
+            findings.append(
+                Finding(
+                    "error",
+                    "repo_source_missing",
+                    f"Free task table rows must resolve against repos.yaml, which is missing: {registry_file}.",
+                    "Create repos.yaml or fix the Mode line.",
+                )
+            )
+    elif kind == "scenario" and scenario_file is not None and scenario_file.is_file():
+        try:
+            _, scenario_data = load_scenario(root, scenario_name or "")
+            source_keys = set(scenario_repos(scenario_data))
+            source_label = "scenario.yaml"
+        except HarnessError as exc:
+            findings.append(
+                Finding(
+                    "error",
+                    "repo_source_unreadable",
+                    f"scenario.yaml could not be read to resolve table rows: {exc}",
+                    "Fix the scenario (validate-scenario reports details).",
+                )
+            )
+    if source_keys is not None:
+        for row in repo_rows:
+            row["source"] = source_label
+            if row["key"] not in source_keys:
+                code = "repo_not_in_registry" if kind == "free" else "repo_not_in_scenario"
+                findings.append(
+                    Finding(
+                        "error",
+                        code,
+                        f"Per-repo table declares repo '{row['key']}' which is not registered in {source_label}.",
+                        "Reference a repo key from the declaration layer for this task mode.",
+                    )
+                )
+
+    # --- mode-aware: free-task Candidate Scoping still pending ---
+    if kind == "free" and "spec.md" in texts:
+        body = extract_section_body(strip_marked_blocks(texts["spec.md"]), "Candidate Scoping")
+        if body is not None and "TBD" in body:
+            findings.append(
+                Finding(
+                    "warning",
+                    "candidate_scoping_pending",
+                    "Candidate Scoping in spec.md is still TBD.",
+                    "The Planning Pass records the candidate repo set and provenance there.",
+                )
+            )
+
+    status = "ok" if not any(item.level == "error" for item in findings) else "error"
+    return {
+        "status": status,
+        "task_id": task_dir.name,
+        "task_dir": str(task_dir),
+        "mode": mode_label,
+        "mode_raw": raw_mode,
+        "baseline_source": str(root / "templates"),
+        "files": file_reports,
+        "current_step": current_step,
+        "gates": gates,
+        "repos": repo_rows,
+        "findings": [item.to_dict() for item in findings],
+    }
+
+
+def print_check_task_report(report: dict[str, Any]) -> None:
+    print(f"task_dir: {report['task_dir']}")
+    print(f"task_id: {report['task_id']}")
+    print(f"mode: {report.get('mode') or '-'}")
+    print(f"baseline_source: {report['baseline_source']}")
+    print(f"status: {report['status']}")
+    print("")
+    print("files:")
+    for item in report["files"]:
+        if not item.get("exists"):
+            print(f"- {item['name']}: missing")
+            continue
+        missing = item.get("sections_missing") or []
+        if missing:
+            print(
+                f"- {item['name']}: sections {item['sections_required'] - len(missing)}/{item['sections_required']} present, missing: {', '.join(missing)}"
+            )
+        else:
+            print(f"- {item['name']}: sections {item['sections_required']}/{item['sections_required']} present")
+    print("")
+    print("repos:")
+    for item in report["repos"]:
+        print(
+            f"- {item['key']} branch={item.get('branch') or '-'} source={item.get('source') or 'n/a'}"
+        )
+    print(f"current_step: {report.get('current_step') or '-'}")
+    gates = report.get("gates") or {}
+    print(
+        "gates: planning={}, spec_review={}".format(
+            gates.get("Planning Gate", "-"), gates.get("Spec Review Gate", "-")
+        )
+    )
+    print("")
+    if report["findings"]:
+        print("findings:")
+        for finding in report["findings"]:
+            print(f"- [{finding['level']}] {finding['code']}: {finding['message']}")
+            if finding.get("fix"):
+                print(f"  fix: {finding['fix']}")
+    else:
+        print("findings: none")
+
+
+def cmd_check_task(args: argparse.Namespace) -> int:
+    root = harness_root()
+    task_dir = resolve_task_dir(root, args.task_id)
+    if not task_dir.is_dir():
+        raise HarnessError(f"Task directory is missing: {task_dir}", EXIT_VALIDATION)
+    report = check_task_structure(root, task_dir)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print_check_task_report(report)
+    return EXIT_OK if report["status"] == "ok" else EXIT_VALIDATION
 
 
 class RunLock:
@@ -2149,7 +3575,17 @@ def render_agent_prompt(
     checks = repo.get("checks") or []
     dependencies = repo.get("depends_on") or []
     dependency_lines = markdown_dependencies(dependencies) if dependencies else "None."
-    return f"""You are the repo-local implementation agent for scenario `{context["scenario"]}`, repo `{repo["key"]}`.
+    if context.get("mode") == "free":
+        header = (
+            f"You are the repo-local implementation agent for free task `{task_dir.name}`, "
+            f"repo `{repo['key']}`."
+        )
+    else:
+        header = (
+            f"You are the repo-local implementation agent for scenario `{context['scenario']}`, "
+            f"repo `{repo['key']}`."
+        )
+    return f"""{header}
 
 Working directory: `{repo.get("path")}`
 Expected task branch (exact match required): `{expected_branch or "TBD"}`
@@ -2163,18 +3599,28 @@ Follow this order and stop before editing if any step fails:
    the skip in `{task_dir / "status.md"}` under Notes):
 {markdown_list(instructions, "   (none declared; inspect README.md and CONTRIBUTING.md instead)")}
 
-3. Inspect the scenario-declared key files as needed for implementation:
+3. Inspect the declared key files (scenario.yaml or repos.yaml) as needed:
 {markdown_list(key_files, "   (none declared)")}
 
-4. Implement the repo-local change described in `{task_dir / "spec.md"}`.
+4. Reconcile repo-local spec entries. If `{task_dir / "spec.md"}` references spec
+   entries authored in this repo during planning, first run the repo's
+   spec-framework scaffold/registration flow exactly as its instruction sources
+   document, then merge the planning-authored content into it. Planning content
+   is authoritative; keep the reconciliation diff visible in the repo. If the
+   spec records a document-level-creation fallback for this repo, implement from
+   the inline workspace spec instead.
+5. Implement the repo-local change described in `{task_dir / "spec.md"}`, following
+   the repo-local spec entries it references instead of re-designing them.
    Upstream dependencies consumed by this repo:
    {dependency_lines}
-
-5. Update the task files so the coordinating runner can recover state:
+6. If your work reveals that another repository is affected, do not edit that
+   repository: record the finding in `{task_dir / "status.md"}` and surface it in
+   your verdict (residual_risk, or blocked) so the runner can trigger replanning.
+7. Update the task files so the coordinating runner can recover state:
    - append implementation notes to `{task_dir / "spec.md"}` if the plan deepened
    - set per-repo status in `{task_dir / "status.md"}`
    - record deviations in `{task_dir / "decisions.md"}`
-6. Write your delivery verdict to `{verdict_file_path(task_dir, repo["key"])}` (create
+8. Write your delivery verdict to `{verdict_file_path(task_dir, repo["key"])}` (create
    the `verdicts` directory if needed) with exactly these three lines and nothing else:
    verdict: ok
    blocker: <one line, "none" when you are not blocked>
@@ -2182,7 +3628,7 @@ Follow this order and stop before editing if any step fails:
    Use `verdict: blocked` with a non-empty blocker line when the repo-local change is
    not fully implemented. The runner reads this file after you exit: a missing or
    malformed file, or a blocked verdict, blocks the run even when you exit 0.
-7. Do NOT run git commit, push, branch creation, or checkout. Do not modify git state.
+9. Do NOT run git commit, push, branch creation, or checkout. Do not modify git state.
 
 The coordinating runner will read your verdict file and run the repo checks itself
 after you exit:
@@ -2279,8 +3725,42 @@ def cmd_run(args: argparse.Namespace) -> int:
         )
 
     root = harness_root()
-    validation = validate_scenario(root, args.scenario)
     dry_run_path_codes = {"repo_path_missing", "repo_path_not_git"}
+    free_mode = False
+    label: str | None = args.scenario
+    task_dir: Path | None = None
+
+    if args.scenario:
+        validation = validate_scenario(root, args.scenario)
+        validation_refused = "Scenario validation failed; run refused. Fix findings first: "
+    else:
+        # The single seam: without a scenario argument the mode comes from the
+        # task's status.md. A free task builds its context from the task
+        # declaration + repos.yaml; everything after the context (prompt
+        # rendering, branch gates, verdicts, checks) is mode-agnostic.
+        task_dir = resolve_task_dir(root, args.task)
+        if not task_dir.exists() or not (task_dir / "status.md").exists():
+            raise HarnessError(
+                f"Task directory with status.md is required: {task_dir}",
+                EXIT_USAGE,
+            )
+        kind, name = read_task_mode(task_dir)
+        if kind == "free":
+            free_mode = True
+            label = "free"
+            validation = validate_registry(root)
+            validation_refused = "Registry validation failed; run refused. Fix findings first: "
+        elif kind == "scenario" and name:
+            label = name
+            validation = validate_scenario(root, name)
+            validation_refused = "Scenario validation failed; run refused. Fix findings first: "
+        else:
+            raise HarnessError(
+                "run requires a scenario argument, or a task whose status.md records "
+                "`mode: free` / `mode: scenario:<name>` (legacy: a `Scenario:` line).",
+                EXIT_USAGE,
+            )
+
     fatal_findings = [
         finding
         for finding in validation["findings"]
@@ -2289,22 +3769,31 @@ def cmd_run(args: argparse.Namespace) -> int:
     ]
     if fatal_findings:
         raise HarnessError(
-            "Scenario validation failed; run refused. Fix findings first: "
+            validation_refused
             + "; ".join(f"{item['code']}: {item['message']}" for item in fatal_findings),
             EXIT_VALIDATION,
         )
 
-    task_dir = resolve_task_dir(root, args.task)
+    if task_dir is None:
+        task_dir = resolve_task_dir(root, args.task)
     if not task_dir.exists() or not (task_dir / "status.md").exists():
         raise HarnessError(
             f"Task directory with status.md is required: {task_dir}",
             EXIT_USAGE,
         )
 
-    context = scenario_context(root, args.scenario)
+    if free_mode:
+        context = free_task_context(root, task_dir)
+    else:
+        context = scenario_context(root, args.scenario)
     if args.repo:
         selected_repos = [repo for repo in context["repos"] if repo["key"] == args.repo]
         if not selected_repos:
+            if free_mode:
+                raise HarnessError(
+                    f"Task-declared repo set does not include repo '{args.repo}'.",
+                    EXIT_USAGE,
+                )
             raise HarnessError(
                 f"Scenario '{args.scenario}' does not include repo '{args.repo}'.",
                 EXIT_USAGE,
@@ -2313,8 +3802,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         selected_repos = list(context["repos"])
 
     expected_branches = read_task_branches(task_dir)
+    if free_mode:
+        defaults = read_task_branch_defaults(task_dir)
+        for repo in context["repos"]:
+            if not expected_branches.get(repo["key"]):
+                fallback = defaults["overrides"].get(repo["key"]) or defaults["default"]
+                if fallback:
+                    expected_branches[repo["key"]] = fallback
     report: dict[str, Any] = {
-        "scenario": args.scenario,
+        "scenario": label,
+        "mode": "free" if free_mode else "scenario",
         "task_dir": str(task_dir),
         "agent_backend": args.agent,
         "permission": args.permission,
@@ -2405,9 +3902,19 @@ def cmd_run(args: argparse.Namespace) -> int:
             entry: dict[str, Any] = {"key": repo_key, "result": "pending"}
             report["repos"].append(entry)
 
-            preflight = collect_preflight(
-                root, args.scenario, expected_branches
-            )
+            if free_mode:
+                preflight = collect_preflight(
+                    root,
+                    label,
+                    expected_branches,
+                    context=context,
+                    validation=validation,
+                    path_source="repos.yaml",
+                )
+            else:
+                preflight = collect_preflight(
+                    root, args.scenario, expected_branches
+                )
             repo_preflight = next(
                 (item for item in preflight["repos"] if item["key"] == repo_key), None
             )
@@ -2538,9 +4045,14 @@ def cmd_run(args: argparse.Namespace) -> int:
                     repo_key,
                 )
 
-            checks_report = run_checks(
-                check_matrix(root, args.scenario, repo_key), args.check_timeout
-            )
+            if free_mode:
+                checks_report = run_checks(
+                    checks_matrix_from_context(context, repo_key), args.check_timeout
+                )
+            else:
+                checks_report = run_checks(
+                    check_matrix(root, args.scenario, repo_key), args.check_timeout
+                )
             failed = [
                 item for item in checks_report["results"] if item["result"] != "pass"
             ]
@@ -2595,13 +4107,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate.set_defaults(func=cmd_validate)
 
+    validate_registry_parser = subparsers.add_parser(
+        "validate-registry",
+        help="Validate the workspace registry repos.yaml: structure, edges, paths, "
+        "task-value ban, and scenario cross-check (Q4-a, warning level).",
+    )
+    validate_registry_parser.add_argument(
+        "--json", action="store_true", help="Emit stable JSON output."
+    )
+    validate_registry_parser.set_defaults(func=cmd_validate_registry)
+
     init_task = subparsers.add_parser(
         "init-task",
         help="Create scenario task files from scenario.yaml without overwriting existing files.",
     )
-    init_task.add_argument("scenario", help="Scenario directory name under scenarios/.")
+    init_task.add_argument(
+        "scenario",
+        nargs="?",
+        help="Scenario directory name under scenarios/. Omit with --free.",
+    )
     init_task.add_argument(
         "task_id", nargs="?", help="Task directory name under tasks/."
+    )
+    init_task.add_argument(
+        "--free",
+        action="store_true",
+        help="Scaffold a free task: validates repos.yaml instead of a scenario and "
+        "records mode: free. Requires a task id.",
     )
     init_task.add_argument(
         "--request", default="", help="User request text to place in spec.md."
@@ -2632,7 +4164,12 @@ def build_parser() -> argparse.ArgumentParser:
         "preflight",
         help="Inspect affected repos and optionally update task status and validation files.",
     )
-    preflight.add_argument("scenario", help="Scenario directory name under scenarios/.")
+    preflight.add_argument(
+        "scenario",
+        nargs="?",
+        help="Scenario directory name under scenarios/. Omit with --task for a "
+        "task-driven preflight (free tasks resolve repos from the registry).",
+    )
     preflight.add_argument(
         "--task",
         help="Task id under tasks/ or a task directory path. When present, status.md and validation.md are updated.",
@@ -2666,7 +4203,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="List task directories matching a scenario, newest first.",
     )
     list_tasks.add_argument(
-        "scenario", help="Scenario directory name under scenarios/."
+        "scenario",
+        nargs="?",
+        help="Scenario directory name under scenarios/. Omit to list free tasks.",
+    )
+    list_tasks.add_argument(
+        "--all",
+        action="store_true",
+        help="List tasks of every mode instead of free tasks only.",
     )
     list_tasks.add_argument(
         "--incomplete-only",
@@ -2682,7 +4226,12 @@ def build_parser() -> argparse.ArgumentParser:
         "checks",
         help="List repo-local checks, or run them with --run.",
     )
-    checks.add_argument("scenario", help="Scenario directory name under scenarios/.")
+    checks.add_argument(
+        "scenario",
+        nargs="?",
+        help="Scenario directory name under scenarios/. Omit with --task for "
+        "task-driven checks (free tasks: checks from the registry).",
+    )
     checks.add_argument("--repo", help="Limit to one repo key from the scenario.")
     checks.add_argument(
         "--run",
@@ -2701,11 +4250,30 @@ def build_parser() -> argparse.ArgumentParser:
     checks.add_argument("--json", action="store_true", help="Emit stable JSON output.")
     checks.set_defaults(func=cmd_checks)
 
+    check_task = subparsers.add_parser(
+        "check-task",
+        help="Lint a task directory's file structure against the templates/ skeleton.",
+    )
+    check_task.add_argument(
+        "task_id",
+        help="Task id under tasks/ or a task directory path.",
+    )
+    check_task.add_argument(
+        "--json", action="store_true", help="Emit stable JSON output."
+    )
+    check_task.set_defaults(func=cmd_check_task)
+
     run = subparsers.add_parser(
         "run",
         help="Execute the per-repo subprocess agent layer for a gated task.",
     )
-    run.add_argument("scenario", help="Scenario directory name under scenarios/.")
+    run.add_argument(
+        "scenario",
+        nargs="?",
+        help="Scenario directory name under scenarios/. Omit for a free task "
+        "(mode read from the task's status.md; repo set from the task "
+        "declaration + repos.yaml).",
+    )
     run.add_argument(
         "--task",
         required=True,

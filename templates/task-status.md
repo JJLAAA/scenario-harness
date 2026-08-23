@@ -2,6 +2,8 @@
 
 Scenario:
 
+Mode: <!-- `scenario:<name>` or `free`. Tasks without this line are interpreted as scenario tasks. -->
+
 Task ID:
 
 ## Repositories

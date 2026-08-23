@@ -26,15 +26,16 @@ Scenario Harness 补的就是这一层 scenario-level 协议。它不强行合�
 
 ## 知识模型
 
-harness 把一次跨仓交付所需的知识分成三层，各有明确的归属和生命周期：
+harness 把一次跨仓交付所需的知识分成四层，各有明确的归属和生命周期：
 
-1. **场景定义——静态，本 harness 拥有。** `scenarios/<scenario>/scenario.yaml` 和场景 `README.md`。这是某一类重复任务的协调知识：哪些仓库参与、按什么顺序修改、彼此依赖什么、必须读哪些仓库本地指令、看哪些关键文件、用什么检查证明完成。每类场景编写一次，之后所有任务复用。
-2. **仓库本地知识——静态，各业务仓库拥有。** `instruction_sources` 指向的文件（`AGENTS.md`、`CLAUDE.md`、`.trellis/workflow.md`、`CONTRIBUTING.md` 等），以及 `key_files` 圈定的契约和代码。这是"在这个仓库里怎么干活"的知识，在任何场景执行之前就已存在，场景只是引用它们。
-3. **任务记录——动态，每次执行时生成。** `tasks/<task>/` 下的 `spec.md`、`status.md`、`decisions.md`、`validation.md`。`init-task` 从模板和场景配置机械生成骨架，执行 Agent 在规划、实现、验证过程中充实和更新它们。它们同时也是会话中断时的恢复点。
+1. **工作区登记层（registry）——静态，本 harness 拥有。** harness 根目录下的 `repos.yaml`。它记录每个已登记仓库的固有事实——path、description、instruction sources、key files、checks——以及基线依赖图（`edges`：带 evidence 的有向存在性断言）。registry 与图是加速器而非权威：它们为自由任务的候选圈定和规划提供起点，永远不决定执行顺序、不 gate 任何行为。仓库数量少到单上下文可遍历时，图并非必需；它约束的是工作区增长后的发现成本。
+2. **场景定义——静态，本 harness 拥有。** `scenarios/<scenario>/scenario.yaml` 和场景 `README.md`。这是某一类重复任务的协调知识：哪些仓库参与、按什么顺序修改、彼此依赖什么、必须读哪些仓库本地指令、看哪些关键文件、用什么检查证明完成。每类场景编写一次，之后所有任务复用。
+3. **仓库本地知识——静态，各业务仓库拥有。** `instruction_sources` 指向的文件（`AGENTS.md`、`CLAUDE.md`、`.trellis/workflow.md`、`CONTRIBUTING.md` 等），以及 `key_files` 圈定的契约和代码。这是"在这个仓库里怎么干活"的知识，在任何场景执行之前就已存在，场景只是引用它们。
+4. **任务记录——动态，每次执行时生成。** `tasks/<task>/` 下的 `spec.md`、`status.md`、`decisions.md`、`validation.md`。`init-task` 从模板和场景或 registry 配置机械生成骨架，执行 Agent 在规划、实现、验证过程中充实和更新它们。它们同时也是会话中断时的恢复点。
 
-`scenario.yaml` 是两个静态层之间的胶水：它通过指向各业务仓库内的 instruction sources 和 key files，把 harness 拥有的协调知识与仓库拥有的本地知识绑定在一起。
+`repos.yaml` 与 `scenario.yaml` 是静态层之间的胶水：`repos.yaml` 把工作区与已登记的仓库绑定；`scenario.yaml` 通过指向各业务仓库内的 instruction sources 和 key files，把 harness 拥有的协调知识与仓库拥有的本地知识绑定在一起。
 
-只有任务层是运行时生成的，且数据流是单向的：仓库本地指令作为输入被阅读，Agent 从中学到的内容被浓缩进跨仓任务 spec。harness 从不生成、改写或回写仓库本地的 spec。
+只有任务层是运行时生成的，且数据流是单向的：仓库本地指令作为输入被阅读，Agent 从中学到的内容被浓缩进跨仓任务 spec。harness 绝不写回仓库的常设知识（`instruction_sources` 指向的工作流文档与规范）。任务期的仓内工件——仓内自有 spec 框架中的 spec 条目——由规划会话按仓规文档级创建、由仓内实现会话运行时对账，workspace task files 只持引用、绝不复述。
 
 知识摆放位置与执行协议是耦合的：规划与规格评审门禁、固定的状态词汇表、检查失败处理、中断安全协议，以及 helper CLI。scenario 概念回答的是*知识在哪里*；协议回答的是*执行如何保持安全、可恢复*。两者合起来，把"这一类跨仓交付应该怎么协调"从 Agent 每次现场重新摸索的东西，变成显式、预置、按协议执行的知识。
 
@@ -91,6 +92,8 @@ Scenario Harness 不与 Spec Kit、OpenSpec、Trellis 或 repo 自定义 agent w
 
 它最适合的情况是：这些 repo 本质上属于不同业务域，应该保持独立 ownership、版本管理和 review 流程，但某个反复出现的特定 Scenario 又要求它们协同开发。此时应该沉淀 scenario 级共享上下文，而不是为了这个场景强行把 repo 合并进同一个 monorepo。
 
+当跨仓请求匹配不到任何已声明的 scenario——一次性需求，或尚未复现的形状——使用自由任务入口，而不是硬套 scenario：`init-task --free` 脚手架出同样带门禁的四个任务文件，规划从工作区 registry 圈定候选，完全相同的执行层（gates、每仓子进程 Agent、verdict、checks）按任务声明的拓扑执行。自由任务是拥有一致 fail-closed 行为的一等入口；同一形状反复出现时，再把它固化为 scenario。
+
 不适合用它来替代单个 repo 内部的工作流。每个业务 repo 仍然负责自己的代码风格、测试、生成文件、提交、PR 和 CI。
 
 ## Agent-First 文档原则
@@ -100,12 +103,14 @@ Scenario Harness 不与 Spec Kit、OpenSpec、Trellis 或 repo 自定义 agent w
 强制阅读顺序：
 
 1. `AGENTS.md`
-2. `scenarios/<scenario>/scenario.yaml`
-3. `scenarios/<scenario>/README.md`
+2. `repos.yaml`
+3. `scenarios/<scenario>/scenario.yaml`（scenario 任务）
+4. `scenarios/<scenario>/README.md`（scenario 任务）
 
 其中：
 
-- `AGENTS.md` 定义执行协议、YAML 字段语义、路径解析、执行顺序和冲突处理
+- `AGENTS.md` 定义执行协议、YAML 字段语义（含 `repos.yaml` registry 语义）、路径解析、执行顺序和冲突处理
+- `repos.yaml` 登记工作区仓库与基线依赖图
 - `scenarios/<scenario>/scenario.yaml` 定义该场景的机器可读执行模板，包括 repo 路径、角色、instruction sources、key files 和 checks
 - `scenarios/<scenario>/README.md` 定义具体业务场景的 SOP
 - `tasks/<task>/` 记录本次具体请求、期望分支、执行进度、决策和验证结果
@@ -125,6 +130,7 @@ scenario-harness/
   AGENTS.md
   README.md
   README.zh.md
+  repos.yaml
   scenarios/
     example-contract-change/
       scenario.yaml
@@ -263,6 +269,18 @@ helper 可以列出匹配的 task 目录：
 bin/scenario-harness list-tasks billing-contract-change --incomplete-only
 ```
 
+任务文件的结构随时可以做只读 lint：
+
+```bash
+bin/scenario-harness check-task 2026-05-20-billing-contract-change
+```
+
+`templates/` 同时充当四个任务文件的声明式 schema：必备章节基准在运行时从模板骨架提取，
+因此模板增删章节会在 `check-task` 下次运行时自动生效，零代码改动。模式专属要求（自由任务
+拓扑章节、mode 行与 repo 解析语义）以及 error/warning 分级留在命令代码里。阶段性不完整——
+gates 未记录、repo 表无行、旧式任务无 Mode 行——只产生 warning，不改变退出码；形状非法
+则以非零码退出。
+
 ### 2. 运行 Preflight
 
 进入 repo-local instructions 或编辑业务代码之前，运行：
@@ -348,6 +366,36 @@ agent 输出落在 `tasks/<task>/logs/<repo>.log`；`.run.lock` 保证单写者�
 而非 SDK/app-server）见 [`docs/subprocess-agent-run.md`](docs/subprocess-agent-run.md)；
 mock 自测脚本为 `tests/run_mock_e2e.py`。
 
+### 6. 自由任务：匹配不到 Scenario 的请求
+
+当请求匹配不到任何已声明的 scenario（或明确是一次性需求）时，同一套机制以任务声明的拓扑运行，而不是预声明拓扑：
+
+```bash
+bin/scenario-harness validate-registry
+bin/scenario-harness init-task --free 2026-05-20-rename-profile-field \
+  --request "Rename the profile field across api, web, and worker."
+```
+
+`init-task --free` 校验工作区 registry（而非 scenario），并把 `mode: free` 写入
+`status.md`。随后规划阶段从 `repos.yaml` 圈定候选（用户点名仓库 + 基线图入边邻居）、
+核实仓库现实、填充 status.md 的 per-repo 表——行序即声明的执行顺序——并从任务级依赖边
+初始化依赖就绪段。把任务判定为单仓还额外要求在全部已登记仓库上执行工作区级反查
+（见 AGENTS.md Free Task Protocol）。两个门禁照常适用；Spec Review 是批准生成拓扑的
+人工控制点。
+
+后续命令省略 scenario 参数，改读任务声明 + registry：
+
+```bash
+bin/scenario-harness preflight --task 2026-05-20-rename-profile-field
+bin/scenario-harness checks --task 2026-05-20-rename-profile-field --run
+bin/scenario-harness run --task 2026-05-20-rename-profile-field --agent claude-code
+```
+
+`run` 对无 gates 记录的自由任务与 scenario 任务一视同仁地拒绝（exit 2，
+`planning_gate_missing` / `spec_review_gate_missing`），按任务声明顺序执行，verdict 与
+checks 门禁完全一致。实现中发现新的受影响仓库走 Replanning Protocol 并重新 Spec
+Review，绝不允许静默扩集。
+
 ### 3. 执行模型
 
 默认执行模型是单个 agent 串行执行 scenario。MVP 工作流中不引入多 agent 调度。关于这个模型需要直视的局限，以及与之兼容的每仓新会话模式，见"单会话局限与每仓新会话模式"一节。
@@ -367,21 +415,21 @@ scenario 应该足够收敛，让 agent 可以依靠已配置的 repos、checks 
 
 agent 应该：
 
-1. 按顺序阅读 harness 文档
-2. 阅读 `scenarios/<scenario>/scenario.yaml`，确定 affected repo key
-3. 阅读 `scenarios/<scenario>/README.md`
-4. 运行 `bin/scenario-harness validate-scenario <scenario>`
-5. 用 `bin/scenario-harness plan-scenario <scenario>` 携带压缩后的执行摘要
-6. 用 `bin/scenario-harness init-task` 或 `bin/scenario-harness list-tasks` 创建或选择 task 文件
-7. 进入业务 repo 前运行 `bin/scenario-harness preflight <scenario> --task <task-id>`
-8. 按 `scenarios.<name>.order` 执行
-9. 进入每个 repo 后读取 scenario 定义的 `repos.<repo>.instruction_sources`
-10. 检查 scenario 定义的 `repos.<repo>.key_files`
-11. 在编辑代码前，用 key files 中读到的信息补全 `tasks/<task-id>/spec.md`，记录 implementation notes、影响面、风险和验证重点
-12. 按补全后的 task spec 实施 repo-local 修改
+1. 用 `AGENTS.md` 的 Task Mode Selection Protocol 选择任务模式（scenario 任务或自由任务），并把模式与理由记入任务 spec
+2. 按顺序阅读 harness 文档。scenario 任务读 `scenarios/<scenario>/scenario.yaml` 确定 affected repo key；自由任务读 `repos.yaml` 并在规划前圈定候选
+3. 阅读 `scenarios/<scenario>/README.md`（scenario 任务）
+4. 运行 `bin/scenario-harness validate-scenario <scenario>`（scenario 任务）或 `bin/scenario-harness validate-registry`（自由任务）
+5. 用 `bin/scenario-harness plan-scenario <scenario>` 携带压缩后的执行摘要（scenario 加速器；自由任务直接从 registry 规划）
+6. 用 `bin/scenario-harness init-task`（或 `init-task --free`）或 `bin/scenario-harness list-tasks` 创建或选择 task 文件
+7. 进入业务 repo 前运行 preflight：`bin/scenario-harness preflight <scenario> --task <task-id>`，自由任务用 `preflight --task <task-id>`
+8. 按权威顺序执行：scenario `order`（scenario 任务）或任务声明拓扑（自由任务）
+9. 进入每个 repo 后读取声明的 `repos.<repo>.instruction_sources`（registry 条目缺省时回落到通用项目文件）
+10. 检查声明的 `repos.<repo>.key_files`
+11. 在编辑代码前，用 key files 中读到的信息补全 `tasks/<task-id>/spec.md`，记录 implementation notes、影响面、风险和验证重点；并按 AGENTS.md 的 Spec Ownership Layering 在各仓自己的框架内撰写仓内 spec 条目
+12. 按补全后的 task spec 实施 repo-local 修改，遵循 spec 引用的仓内 spec 条目（先做运行时对账）
 13. 如果用户澄清会影响目标、范围、实现、验证、风险或交付顺序，继续前先同步到 `spec.md`
 14. 如果实现需要明显偏离补全后的 spec，先在 `decisions.md` 记录原因，并把变化同步回 `spec.md`
-15. 运行每个 affected repo 的 repo-local `checks`，优先使用 `bin/scenario-harness checks <scenario> --run --task <task-id>`
+15. 运行每个 affected repo 的 repo-local `checks`，优先使用 `bin/scenario-harness checks <scenario> --run --task <task-id>`（自由任务用 `checks --task <task-id> --run`）
 16. 更新 `tasks/<task-id>/` 下的任务文件
 17. 汇报 diff 范围、验证结果、风险和交付顺序
 

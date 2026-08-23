@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -22,6 +23,7 @@ import time
 from pathlib import Path
 
 REAL_HARNESS_BIN = Path(__file__).resolve().parents[1] / "bin" / "scenario-harness"
+REAL_TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 
 MOCK_AGENT = textwrap.dedent(
     '''\
@@ -116,6 +118,35 @@ SCENARIO_YAML = textwrap.dedent(
     """
 )
 
+REGISTRY_YAML = textwrap.dedent(
+    """\
+    repos:
+      alpha:
+        path: repos/alpha
+        description: First mock repo.
+        instruction_sources:
+          - AGENTS.md
+        key_files:
+          - src/
+        checks:
+          - {alpha_checks}
+      beta:
+        path: repos/beta
+        description: Second mock repo.
+        instruction_sources:
+          - AGENTS.md
+        key_files:
+          - src/
+        checks:
+          - test -f done-marker.txt
+
+    edges:
+      - from: beta
+        to: alpha
+        evidence: "beta consumes the alpha artifact"
+    """
+)
+
 STATUS_TEMPLATE = """# Status
 
 Scenario: `mock`
@@ -127,6 +158,37 @@ Task ID: `mock-task`
 | --- | --- | --- | --- | --- |
 | alpha | not started | scenario/mock-task | - | pending |
 | beta | not started | scenario/mock-task | - | pending |
+
+## Current Step
+
+current step: {step}
+
+## Planning Gate
+
+{planning}
+
+## Spec Review Gate
+
+{spec_review}
+
+## Blockers
+
+None.
+"""
+
+FREE_STATUS_TEMPLATE = """# Status
+
+Mode: `free`
+
+Scenario: none (free task)
+
+Task ID: `{task_id}`
+
+## Repositories
+
+| Repo | Status | Expected Branch | Actual Branch | Checks |
+| --- | --- | --- | --- | --- |
+{repo_rows}
 
 ## Current Step
 
@@ -164,7 +226,9 @@ def make_git_repo(path: Path, branch: str):
     sh(["git", "-C", str(path), "commit", "-q", "-m", "init"])
 
 
-def make_harness_root(tmp: Path, checks_override=None) -> Path:
+def make_harness_root(
+    tmp: Path, checks_override=None, registry=False, registry_checks_override=None
+) -> Path:
     """Copy the CLI into a temp root so harness_root() resolves to the temp."""
 
     root = tmp / "harness"
@@ -172,6 +236,7 @@ def make_harness_root(tmp: Path, checks_override=None) -> Path:
     (root / "scenarios" / "mock").mkdir(parents=True)
     (root / "tasks").mkdir(parents=True)
     shutil.copy2(REAL_HARNESS_BIN, root / "bin" / "scenario-harness")
+    shutil.copytree(REAL_TEMPLATES_DIR, root / "templates")
     scenario_yaml = SCENARIO_YAML
     if checks_override:
         scenario_yaml = SCENARIO_YAML.replace(
@@ -183,6 +248,13 @@ def make_harness_root(tmp: Path, checks_override=None) -> Path:
     (root / "scenarios" / "mock" / "README.md").write_text(
         "# Mock scenario\n\nMock SOP for the run self-test.\n", encoding="utf-8"
     )
+    if registry:
+        (root / "repos.yaml").write_text(
+            REGISTRY_YAML.format(
+                alpha_checks=registry_checks_override or "test -f done-marker.txt"
+            ),
+            encoding="utf-8",
+        )
     for key in ("alpha", "beta"):
         make_git_repo(root / "repos" / key, "scenario/mock-task")
     mockbin = tmp / "mockbin"
@@ -199,6 +271,35 @@ def make_task(root: Path, step="spec_review_approved", planning="complete.", spe
     (task_dir / "validation.md").write_text("# Validation Report\n", encoding="utf-8")
     (task_dir / "status.md").write_text(
         STATUS_TEMPLATE.format(step=step, planning=planning, spec_review=spec_review),
+        encoding="utf-8",
+    )
+    return task_dir
+
+
+def make_free_task(
+    root: Path,
+    order=("beta", "alpha"),
+    step="spec_review_approved",
+    planning="complete.",
+    spec_review="approved by user.",
+    name="free-task",
+    branch="scenario/mock-task",
+):
+    task_dir = root / "tasks" / name
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "spec.md").write_text("# Task Spec\n\nFree mock request.\n", encoding="utf-8")
+    (task_dir / "validation.md").write_text("# Validation Report\n", encoding="utf-8")
+    repo_rows = "\n".join(
+        f"| {repo} | not started | {branch} | - | pending |" for repo in order
+    )
+    (task_dir / "status.md").write_text(
+        FREE_STATUS_TEMPLATE.format(
+            task_id=name,
+            repo_rows=repo_rows,
+            step=step,
+            planning=planning,
+            spec_review=spec_review,
+        ),
         encoding="utf-8",
     )
     return task_dir
@@ -547,6 +648,486 @@ def test_verdict_stale_reset():
         result = run_cli(root, ["run", "mock", "--task", "mock-task"])
         assert result.returncode == 0, result.stderr
         assert (root / "repos" / "beta" / "done-marker.txt").exists()
+
+
+@case("validate-registry: must-do checks, Q4-a/Q3-B warnings, subset parser")
+def test_validate_registry():
+    with tempfile.TemporaryDirectory() as raw:
+        root = make_harness_root(Path(raw), registry=True)
+        cli = str(root / "bin" / "scenario-harness")
+        ok = sh([cli, "validate-registry", "--json"])
+        assert ok.returncode == 0, ok.stdout + ok.stderr
+        report = json.loads(ok.stdout)
+        assert report["status"] == "ok"
+        assert [item["key"] for item in report["repos"]] == ["alpha", "beta"]
+        assert report["edges"] == [{"from": "beta", "to": "alpha"}]
+        assert report["findings"] == []
+
+        # Block the PyYAML import so validation runs on the subset parser.
+        blocker = root.parent / "noyaml"
+        blocker.mkdir()
+        (blocker / "yaml.py").write_text(
+            "raise ImportError('yaml blocked for test')\n", encoding="utf-8"
+        )
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(blocker)
+        subset = sh([cli, "validate-registry"], env=env)
+        assert subset.returncode == 0, subset.stdout + subset.stderr
+
+    with tempfile.TemporaryDirectory() as raw:
+        root = make_harness_root(Path(raw), registry=True)
+        cli = str(root / "bin" / "scenario-harness")
+        registry_file = root / "repos.yaml"
+        base = registry_file.read_text(encoding="utf-8")
+
+        def codes_of(text):
+            registry_file.write_text(text, encoding="utf-8")
+            result = sh([cli, "validate-registry", "--json"])
+            assert result.returncode == 2
+            return {item["code"] for item in json.loads(result.stdout)["findings"]}
+
+        assert "edge_endpoint_unknown" in codes_of(base.replace("to: alpha", "to: ghost"))
+        assert "duplicate_edge" in codes_of(
+            base + "  - from: beta\n    to: alpha\n    evidence: \"duplicate\"\n"
+        )
+        assert "invalid_edge_evidence" in codes_of(
+            base.replace(
+                'evidence: "beta consumes the alpha artifact"', 'evidence: ""'
+            )
+        )
+        assert "task_specific_dependency_field" in codes_of(
+            base.replace("path: repos/alpha", "path: repos/alpha\n    branch: feature-x")
+        )
+        assert "repo_path_missing" in codes_of(base.replace("repos/alpha", "repos/ghost"))
+
+    # Q4-a / Q3-B: registry missing a scenario repo -> warning only, exits stay 0.
+    with tempfile.TemporaryDirectory() as raw:
+        root = make_harness_root(Path(raw))
+        (root / "repos.yaml").write_text(
+            "repos:\n  alpha:\n    path: repos/alpha\n", encoding="utf-8"
+        )
+        cli = str(root / "bin" / "scenario-harness")
+        reg = sh([cli, "validate-registry", "--json"])
+        assert reg.returncode == 0
+        reg_report = json.loads(reg.stdout)
+        assert "repo_not_in_registry" in {
+            item["code"] for item in reg_report["findings"]
+        }
+        assert all(item["level"] == "warning" for item in reg_report["findings"])
+        val = sh([cli, "validate-scenario", "mock", "--json"])
+        assert val.returncode == 0
+        val_report = json.loads(val.stdout)
+        assert val_report["status"] == "ok"
+        assert "repo_not_in_registry" in {
+            item["code"] for item in val_report["findings"]
+        }
+        assert all(item["level"] == "warning" for item in val_report["findings"])
+
+    # Field divergence between the two files -> warning on both sides.
+    with tempfile.TemporaryDirectory() as raw:
+        root = make_harness_root(Path(raw), registry=True)
+        registry_file = root / "repos.yaml"
+        registry_file.write_text(
+            registry_file.read_text(encoding="utf-8").replace(
+                "test -f done-marker.txt", "echo divergent-check", 1
+            ),
+            encoding="utf-8",
+        )
+        cli = str(root / "bin" / "scenario-harness")
+        reg = sh([cli, "validate-registry", "--json"])
+        assert reg.returncode == 0
+        assert "registry_field_divergence" in {
+            item["code"] for item in json.loads(reg.stdout)["findings"]
+        }
+        val = sh([cli, "validate-scenario", "mock", "--json"])
+        assert val.returncode == 0
+        assert "registry_field_divergence" in {
+            item["code"] for item in json.loads(val.stdout)["findings"]
+        }
+
+
+@case("init-task --free scaffolds mode and default branch; free CLI variants")
+def test_free_init():
+    with tempfile.TemporaryDirectory() as raw:
+        root = make_harness_root(Path(raw), registry=True)
+        cli = str(root / "bin" / "scenario-harness")
+        dry = sh([cli, "init-task", "--free", "2026-08-23-demo", "--request", "free mock", "--dry-run"])
+        assert dry.returncode == 0, dry.stderr
+        made = sh([cli, "init-task", "--free", "2026-08-23-demo", "--request", "free mock"])
+        assert made.returncode == 0, made.stderr
+        task_dir = root / "tasks" / "2026-08-23-demo"
+        for name in ("spec.md", "status.md", "decisions.md", "validation.md"):
+            assert (task_dir / name).exists(), name
+        status_text = (task_dir / "status.md").read_text(encoding="utf-8")
+        assert "Mode: `free`" in status_text
+        assert "Default expected branch: `scenario/2026-08-23-demo`" in status_text
+        assert sh([cli, "init-task", "--free"]).returncode == 64
+        assert sh([cli, "init-task", "--free", "mock", "x"]).returncode == 64
+
+        # list-tasks: free filter by default; scenario filter excludes the free task.
+        listing = sh([cli, "list-tasks", "--json"])
+        assert listing.returncode == 0
+        data = json.loads(listing.stdout)
+        assert [item["task_id"] for item in data["tasks"]] == ["2026-08-23-demo"]
+        assert data["tasks"][0]["mode"] == "free"
+        scenario_listing = sh([cli, "list-tasks", "mock", "--json"])
+        assert json.loads(scenario_listing.stdout)["tasks"] == []
+
+        # preflight/checks free variants run off the task declaration + registry.
+        free_task = make_free_task(root)
+        pre = sh([cli, "preflight", "--task", "free-task", "--no-write", "--json"])
+        assert pre.returncode == 0, pre.stdout + pre.stderr
+        pre_report = json.loads(pre.stdout)
+        assert [item["key"] for item in pre_report["repos"]] == ["beta", "alpha"]
+        assert all(item["branch_result"] == "pass" for item in pre_report["repos"])
+        chk = sh([cli, "checks", "--task", "free-task"])
+        assert chk.returncode == 0
+        assert "test -f done-marker.txt" in chk.stdout
+        assert "repo=beta" in chk.stdout and "repo=alpha" in chk.stdout
+        single = sh([cli, "checks", "--task", "free-task", "--repo", "alpha"])
+        assert single.returncode == 0
+        assert "repo=alpha" in single.stdout and "repo=beta" not in single.stdout
+
+
+@case("free run without gates is rejected (fail-closed, same categories)")
+def test_free_run_gates():
+    with tempfile.TemporaryDirectory() as raw:
+        root = make_harness_root(Path(raw), registry=True)
+        task_dir = make_free_task(
+            root, step="task_created", planning="not started.", spec_review="pending."
+        )
+        result = run_cli(root, ["run", "--task", "free-task"])
+        assert result.returncode == 2, result.stdout
+        assert "planning_gate_missing" in result.stderr
+        status_text = (task_dir / "status.md").read_text(encoding="utf-8")
+        assert "run-status" in status_text and "planning_gate_missing" in status_text
+        assert not (root / "repos" / "beta" / "done-marker.txt").exists()
+
+        make_free_task(
+            root,
+            step="planning_complete",
+            planning="complete.",
+            spec_review="pending.",
+            name="free-task2",
+        )
+        result2 = run_cli(root, ["run", "--task", "free-task2"])
+        assert result2.returncode == 2, result2.stdout
+        assert "spec_review_gate_missing" in result2.stderr
+        assert not (root / "repos" / "alpha" / "done-marker.txt").exists()
+
+
+@case("free run respects the task-declared order, not the registry order")
+def test_free_run_order():
+    with tempfile.TemporaryDirectory() as raw:
+        # Registry lists alpha first; the task declares beta first. alpha is
+        # rigged to fail, so reaching beta's marker before the failure proves
+        # the declared order (not the registry order) drove the run.
+        root = make_harness_root(Path(raw), registry=True)
+        make_free_task(root, order=("beta", "alpha"))
+        set_mode(root, "alpha", "fail")
+        result = run_cli(root, ["run", "--task", "free-task"])
+        assert result.returncode == 2, result.stdout
+        assert "stage=agent" in result.stderr and "repo=alpha" in result.stderr
+        assert (root / "repos" / "beta" / "done-marker.txt").exists()
+        assert not (root / "repos" / "alpha" / "done-marker.txt").exists()
+
+
+def delete_section(text: str, heading: str) -> str:
+    pattern = re.compile(rf"^## {re.escape(heading)}\s*$(.*?)(?=^## |\Z)", re.S | re.M)
+    return pattern.sub("", text)
+
+
+def add_repo_row(status_text: str, row: str) -> str:
+    lines = status_text.splitlines()
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].startswith("|"):
+            lines.insert(index + 1, row)
+            break
+    else:
+        raise AssertionError("status.md has no table row to append after")
+    return "\n".join(lines) + "\n"
+
+
+def complete_scenario_task(root: Path, name="ct-scenario"):
+    cli = str(root / "bin" / "scenario-harness")
+    assert sh([cli, "init-task", "mock", name, "--request", "check-task fixture"]).returncode == 0
+    task_dir = root / "tasks" / name
+    status = (task_dir / "status.md").read_text(encoding="utf-8")
+    status = status.replace(
+        "Task initialized. Next step: run preflight before entering business repositories.",
+        "current step: spec_review_approved",
+    )
+    status += "\n## Planning Gate\n\ncomplete.\n\n## Spec Review Gate\n\napproved by user.\n"
+    (task_dir / "status.md").write_text(status, encoding="utf-8")
+    return task_dir
+
+
+def complete_free_task(root: Path, name="ct-free"):
+    cli = str(root / "bin" / "scenario-harness")
+    assert sh([cli, "init-task", "--free", name, "--request", "check-task fixture"]).returncode == 0
+    task_dir = root / "tasks" / name
+    status = (task_dir / "status.md").read_text(encoding="utf-8")
+    separator = "| --- | --- | --- | --- | --- |\n"
+    rows = (
+        "| beta | not started | scenario/mock-task | - | pending |\n"
+        "| alpha | not started | scenario/mock-task | - | pending |\n"
+    )
+    assert separator in status
+    status = status.replace(separator, separator + rows, 1)
+    status = status.replace(
+        "Task initialized. Next step: candidate scoping from repos.yaml, then the Planning Pass before entering business repositories.",
+        "current step: spec_review_approved",
+    )
+    status += "\n## Planning Gate\n\ncomplete.\n\n## Spec Review Gate\n\napproved by user.\n"
+    (task_dir / "status.md").write_text(status, encoding="utf-8")
+    spec = (task_dir / "spec.md").read_text(encoding="utf-8")
+    spec = spec.replace("TBD — record the candidate repo set", "Recorded candidate repo set")
+    (task_dir / "spec.md").write_text(spec, encoding="utf-8")
+    return task_dir
+
+
+@case("check-task: gate-ready tasks of both modes lint clean")
+def test_check_task_happy():
+    with tempfile.TemporaryDirectory() as raw:
+        root = make_harness_root(Path(raw), registry=True)
+        cli = str(root / "bin" / "scenario-harness")
+        scenario_task = complete_scenario_task(root)
+        free_task = complete_free_task(root)
+        for task_dir, expected_mode in (
+            (scenario_task, "scenario:mock"),
+            (free_task, "free"),
+        ):
+            result = sh([cli, "check-task", task_dir.name, "--json"])
+            assert result.returncode == 0, result.stdout
+            report = json.loads(result.stdout)
+            assert report["status"] == "ok"
+            assert report["mode"] == expected_mode
+            assert report["findings"] == []
+            assert report["repos"] and all(item.get("source") for item in report["repos"])
+
+
+@case("check-task: shape violations are errors with distinct finding codes")
+def test_check_task_broken():
+    with tempfile.TemporaryDirectory() as raw:
+        root = make_harness_root(Path(raw), registry=True)
+        cli = str(root / "bin" / "scenario-harness")
+
+        def lint(task_dir):
+            result = sh([cli, "check-task", task_dir.name, "--json"])
+            assert result.returncode == 2, result.stdout
+            report = json.loads(result.stdout)
+            assert report["status"] == "error"
+            return report
+
+        def codes(report):
+            return {item["code"] for item in report["findings"]}
+
+        # deleted common-core section
+        task = complete_scenario_task(root, "ct-broken-section")
+        (task / "spec.md").write_text(
+            delete_section((task / "spec.md").read_text(encoding="utf-8"), "Scope"),
+            encoding="utf-8",
+        )
+        report = lint(task)
+        assert "missing_section" in codes(report)
+        assert any("Scope" in item["message"] for item in report["findings"])
+
+        # invalid current step value
+        task = complete_scenario_task(root, "ct-broken-step")
+        (task / "status.md").write_text(
+            (task / "status.md")
+            .read_text(encoding="utf-8")
+            .replace("current step: spec_review_approved", "current step: banana"),
+            encoding="utf-8",
+        )
+        assert "current_step_invalid" in codes(lint(task))
+
+        # mode-aware: scenario table row not declared in scenario.yaml
+        task = complete_scenario_task(root, "ct-broken-row")
+        (task / "status.md").write_text(
+            add_repo_row(
+                (task / "status.md").read_text(encoding="utf-8"),
+                "| ghost | not started | scenario/ct-broken-row | - | pending |",
+            ),
+            encoding="utf-8",
+        )
+        assert "repo_not_in_scenario" in codes(lint(task))
+
+        # mode-aware: free table row not registered in repos.yaml
+        task = complete_free_task(root, "ct-broken-free-row")
+        (task / "status.md").write_text(
+            add_repo_row(
+                (task / "status.md").read_text(encoding="utf-8"),
+                "| ghost | not started | scenario/mock-task | - | pending |",
+            ),
+            encoding="utf-8",
+        )
+        assert "repo_not_in_registry" in codes(lint(task))
+
+        # invalid mode value
+        task = complete_free_task(root, "ct-broken-mode")
+        (task / "status.md").write_text(
+            (task / "status.md")
+            .read_text(encoding="utf-8")
+            .replace("Mode: `free`", "Mode: `banana`"),
+            encoding="utf-8",
+        )
+        assert "mode_invalid" in codes(lint(task))
+
+        # mode-aware: mode points at a scenario that does not exist
+        task = complete_scenario_task(root, "ct-broken-pointing")
+        (task / "status.md").write_text(
+            (task / "status.md")
+            .read_text(encoding="utf-8")
+            .replace("Mode: `scenario:mock`", "Mode: `scenario:ghost`"),
+            encoding="utf-8",
+        )
+        assert "mode_scenario_unknown" in codes(lint(task))
+
+        # mode-aware: mode-specific sections missing
+        task = complete_free_task(root, "ct-broken-topology")
+        (task / "spec.md").write_text(
+            delete_section(
+                (task / "spec.md").read_text(encoding="utf-8"), "Task-Declared Topology"
+            ),
+            encoding="utf-8",
+        )
+        report = lint(task)
+        assert "missing_section" in codes(report)
+        assert any(
+            "Task-Declared Topology" in item["message"] for item in report["findings"]
+        )
+        task = complete_scenario_task(root, "ct-broken-order")
+        (task / "spec.md").write_text(
+            delete_section((task / "spec.md").read_text(encoding="utf-8"), "Scenario Order"),
+            encoding="utf-8",
+        )
+        assert any(
+            item["code"] == "missing_section" and "Scenario Order" in item["message"]
+            for item in lint(task)["findings"]
+        )
+
+        # misaligned table row (column count)
+        task = complete_scenario_task(root, "ct-broken-columns")
+        (task / "status.md").write_text(
+            add_repo_row(
+                (task / "status.md").read_text(encoding="utf-8"),
+                "| alpha | not started | scenario/ct-broken-columns | - |",
+            ),
+            encoding="utf-8",
+        )
+        assert "table_row_misaligned" in codes(lint(task))
+
+
+@case("check-task: legacy task without Mode line and unrecorded gates are warnings only")
+def test_check_task_legacy_warnings():
+    with tempfile.TemporaryDirectory() as raw:
+        root = make_harness_root(Path(raw))
+        cli = str(root / "bin" / "scenario-harness")
+        task = complete_scenario_task(root, "ct-legacy")
+        status = (task / "status.md").read_text(encoding="utf-8")
+        status = status.replace("Mode: `scenario:mock`\n\n", "")
+        status = status.replace("current step: spec_review_approved", "Task initialized.")
+        status = status.split("\n## Planning Gate")[0] + "\n"
+        (task / "status.md").write_text(status, encoding="utf-8")
+        result = sh([cli, "check-task", "ct-legacy", "--json"])
+        assert result.returncode == 0, result.stdout
+        report = json.loads(result.stdout)
+        assert report["status"] == "ok"
+        assert report["mode"] == "scenario:mock"  # legacy fallback via Scenario: line
+        leveled = {item["code"]: item["level"] for item in report["findings"]}
+        assert leveled.get("mode_missing") == "warning"
+        assert leveled.get("gate_section_missing") == "warning"
+        assert leveled.get("current_step_missing") == "warning"
+        assert all(level == "warning" for level in leveled.values())
+
+
+@case("check-task: init-task output of both modes is error-free (sync lock)")
+def test_check_task_self_consistency():
+    with tempfile.TemporaryDirectory() as raw:
+        root = make_harness_root(Path(raw), registry=True)
+        cli = str(root / "bin" / "scenario-harness")
+        assert sh([cli, "init-task", "mock", "ct-fresh", "--request", "fresh"]).returncode == 0
+        assert sh([cli, "init-task", "--free", "ct-fresh-free", "--request", "fresh"]).returncode == 0
+        expected_warning_codes = {
+            "ct-fresh": {"current_step_missing", "gate_section_missing"},
+            "ct-fresh-free": {
+                "current_step_missing",
+                "gate_section_missing",
+                "repo_table_empty",
+                "candidate_scoping_pending",
+            },
+        }
+        for name, expected in expected_warning_codes.items():
+            result = sh([cli, "check-task", name, "--json"])
+            assert result.returncode == 0, result.stdout
+            report = json.loads(result.stdout)
+            assert report["status"] == "ok"
+            assert report["findings"], f"{name}: fresh tasks should carry stage warnings"
+            assert all(item["level"] == "warning" for item in report["findings"]), name
+            assert {item["code"] for item in report["findings"]} == expected, name
+
+
+@case("check-task: section baseline is extracted from templates/ at runtime")
+def test_check_task_template_probe():
+    with tempfile.TemporaryDirectory() as raw:
+        root = make_harness_root(Path(raw))
+        cli = str(root / "bin" / "scenario-harness")
+        task = complete_scenario_task(root, "ct-probe")
+        assert sh([cli, "check-task", "ct-probe"]).returncode == 0
+        template = root / "templates" / "spec.md"
+        template.write_text(
+            template.read_text(encoding="utf-8")
+            + "\n## Zzz Runtime Probe\n\n<!-- template-driven schema probe -->\n",
+            encoding="utf-8",
+        )
+        result = sh([cli, "check-task", "ct-probe", "--json"])
+        assert result.returncode == 2, result.stdout
+        report = json.loads(result.stdout)
+        assert any(
+            item["code"] == "missing_section" and "Zzz Runtime Probe" in item["message"]
+            for item in report["findings"]
+        )
+
+
+@case("free run verdict paths unchanged; checks come from the registry")
+def test_free_run_verdict_and_checks():
+    with tempfile.TemporaryDirectory() as raw:
+        # Scenario checks are rigged to fail while the registry check passes:
+        # a green free run proves the checks source is repos.yaml.
+        root = make_harness_root(
+            Path(raw),
+            registry=True,
+            checks_override="exit 1",
+            registry_checks_override=(
+                "test -f done-marker.txt && touch registry-checks-ran.txt"
+            ),
+        )
+        for mode, category in (
+            ("no-verdict", "verdict_missing"),
+            ("blocked", "agent_report_blocked"),
+            ("bad-verdict", "verdict_invalid"),
+        ):
+            make_free_task(root, name=f"free-{mode}")
+            set_mode(root, "beta", mode)  # beta is first in the declared order
+            result = run_cli(root, ["run", "--task", f"free-{mode}"])
+            assert result.returncode == 2, (mode, result.stdout)
+            assert f"category={category}" in result.stderr, mode
+            if mode == "blocked":
+                assert "mock blocker: upstream contract mismatch" in result.stderr
+            assert not (root / "repos" / "alpha" / "done-marker.txt").exists()
+            set_mode(root, "beta", None)
+
+        task_dir = make_free_task(root, name="free-clean")
+        result = run_cli(root, ["run", "--task", "free-clean"])
+        assert result.returncode == 0, result.stderr
+        for repo in ("beta", "alpha"):
+            assert (root / "repos" / repo / "done-marker.txt").exists()
+        assert (root / "repos" / "alpha" / "registry-checks-ran.txt").exists()
+        status_text = (task_dir / "status.md").read_text(encoding="utf-8")
+        assert "| beta | pass | success | ok | pass | complete |" in status_text
+        assert "| alpha | pass | success | ok | pass | complete |" in status_text
+        assert "Recommended current step: `complete`" in status_text
 
 
 def main() -> int:

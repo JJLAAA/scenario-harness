@@ -1,0 +1,44 @@
+<mxfile host="app.diagrams.net"><diagram id="ol1lo89o-k3wj" name="Page-1"><mxGraphModel>
+  <root>
+    <mxCell id="0" />
+    <mxCell id="1" parent="0" />
+    <mxCell id="title" value="双模式任务与多仓工作区" style="text;html=1;fontSize=16;fontStyle=1;align=left;" vertex="1" parent="1"><mxGeometry x="40" y="8" width="400" height="28" as="geometry" /></mxCell>
+    <mxCell id="l1" value="多仓工作区（全局视角）" style="text;html=1;fontSize=12;fontStyle=2;fontColor=#666666;align=left;" vertex="1" parent="1"><mxGeometry x="40" y="38" width="220" height="20" as="geometry" /></mxCell>
+    <mxCell id="repos-yaml" value="repos.yaml
+registry + 基线依赖图
+（存在性边+证据 · 无排序权威）" style="rounded=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1"><mxGeometry x="40" y="60" width="215" height="66" as="geometry" /></mxCell>
+    <mxCell id="repo-a" value="业务仓库 A
+../profile-api" style="rounded=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;" vertex="1" parent="1"><mxGeometry x="300" y="65" width="130" height="56" as="geometry" /></mxCell>
+    <mxCell id="repo-b" value="业务仓库 B
+../profile-web" style="rounded=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;" vertex="1" parent="1"><mxGeometry x="460" y="65" width="130" height="56" as="geometry" /></mxCell>
+    <mxCell id="repo-c" value="业务仓库 C
+../notification-worker" style="rounded=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=12;" vertex="1" parent="1"><mxGeometry x="620" y="65" width="140" height="56" as="geometry" /></mxCell>
+    <mxCell id="e1" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#9673a6;exitX=1;exitY=0.25;entryX=0;entryY=0.5;" edge="1" parent="1" source="repos-yaml" target="repo-a"><mxGeometry relative="1" as="geometry" /></mxCell>
+    <mxCell id="e2" value="索引（advisory）" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#9673a6;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontSize=11;" edge="1" parent="1" source="repos-yaml" target="repo-b"><mxGeometry relative="1" as="geometry" /></mxCell>
+    <mxCell id="e3" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#9673a6;exitX=1;exitY=0.75;entryX=0;entryY=0.5;" edge="1" parent="1" source="repos-yaml" target="repo-c"><mxGeometry relative="1" as="geometry" /></mxCell>
+    <mxCell id="l2" value="任务入口（两种，同一机制底座）" style="text;html=1;fontSize=12;fontStyle=2;fontColor=#666666;align=left;" vertex="1" parent="1"><mxGeometry x="40" y="148" width="260" height="20" as="geometry" /></mxCell>
+    <mxCell id="task-scenario" value="scenario 任务
+scenario.yaml 预声明拓扑
+（order / repos / depends_on）" style="rounded=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1"><mxGeometry x="40" y="170" width="230" height="72" as="geometry" /></mxCell>
+    <mxCell id="task-free" value="自由任务
+Planning Pass 全局分析现场生成拓扑
+（候选集由 registry / 图圈定）" style="rounded=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1"><mxGeometry x="490" y="170" width="270" height="80" as="geometry" /></mxCell>
+    <mxCell id="e4" value="候选圈定（加速器）" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;dashed=1;strokeColor=#9673a6;exitX=0.7;exitY=1;entryX=0.15;entryY=0;fontSize=11;" edge="1" parent="1" source="repos-yaml" target="task-free"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="530" y="140" /></Array></mxGeometry></mxCell>
+    <mxCell id="l3" value="任务文件与门禁（模式无关）" style="text;html=1;fontSize=12;fontStyle=2;fontColor=#666666;align=left;" vertex="1" parent="1"><mxGeometry x="40" y="258" width="260" height="20" as="geometry" /></mxCell>
+    <mxCell id="task-files" value="task files：spec / status / validation / decisions / verdicts
+（拓扑与恢复的唯一载体 · mode: scenario:&lt;name&gt; 或 free）" style="rounded=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" vertex="1" parent="1"><mxGeometry x="230" y="280" width="340" height="58" as="geometry" /></mxCell>
+    <mxCell id="e5" value="预声明拓扑" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0;entryY=0.5;fontSize=11;" edge="1" parent="1" source="task-scenario" target="task-files"><mxGeometry relative="1" as="geometry" /></mxCell>
+    <mxCell id="e6" value="生成拓扑" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;strokeColor=#d79b00;exitX=0.5;exitY=1;entryX=1;entryY=0.5;fontSize=11;" edge="1" parent="1" source="task-free" target="task-files"><mxGeometry relative="1" as="geometry" /></mxCell>
+    <mxCell id="gate-plan" value="Planning Gate" style="rounded=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="110" y="382" width="160" height="46" as="geometry" /></mxCell>
+    <mxCell id="gate-review" value="Spec Review Gate
+（人工批准拓扑）" style="rounded=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="400" y="382" width="200" height="46" as="geometry" /></mxCell>
+    <mxCell id="e7" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;strokeColor=#9673a6;exitX=0.25;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="task-files" target="gate-plan"><mxGeometry relative="1" as="geometry" /></mxCell>
+    <mxCell id="e8" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;strokeColor=#9673a6;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="gate-plan" target="gate-review"><mxGeometry relative="1" as="geometry" /></mxCell>
+    <mxCell id="e9" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;strokeColor=#b85450;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="gate-review" target="run-box"><mxGeometry relative="1" as="geometry" /></mxCell>
+    <mxCell id="run-box" value="bin/scenario-harness run — 每仓子进程执行层（不变）
+对拓扑中的每个仓库：prompt → 子 Agent（cwd=仓库）→ verdict(ok/blocked) → runner 亲自 checks
+分支门禁 · fail-closed · 首失败即停" style="rounded=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" vertex="1" parent="1"><mxGeometry x="90" y="478" width="620" height="82" as="geometry" /></mxCell>
+    <mxCell id="note1" value="全局视角 = 规划/编排阶段；实现阶段每仓子进程隔离 + fail-closed 门禁。
+registry/图仅加速分析，不 gate 任何行为；拓扑权威在 scenario.yaml（预声明）或 task 文件（planning 生成）。" style="text;html=1;fontSize=11;fontColor=#666666;align=left;" vertex="1" parent="1"><mxGeometry x="40" y="568" width="720" height="30" as="geometry" /></mxCell>
+  </root>
+</mxGraphModel></diagram></mxfile>

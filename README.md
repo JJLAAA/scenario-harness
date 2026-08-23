@@ -26,15 +26,16 @@ Scenario Harness provides that missing scenario layer. It keeps the repositories
 
 ## Knowledge Model
 
-The harness splits the knowledge a cross-repo delivery needs into three layers, each with a distinct owner and lifecycle:
+The harness splits the knowledge a cross-repo delivery needs into four layers, each with a distinct owner and lifecycle:
 
-1. **Scenario definition — static, owned by this harness.** `scenarios/<scenario>/scenario.yaml` plus the scenario `README.md`. This is the coordination knowledge for one recurring class of task: which repositories participate, what order they change in, how they depend on each other, which repo-local instruction sources must be read, which key files matter, and which checks prove completion. It is authored once per scenario class and reused across every task.
-2. **Repo-local knowledge — static, owned by each business repo.** The files that `instruction_sources` points to (`AGENTS.md`, `CLAUDE.md`, `.trellis/workflow.md`, `CONTRIBUTING.md`, and similar), plus the contracts and code under `key_files`. This is the "how to work inside this repo" knowledge. It exists before any scenario run; the scenario only references it.
-3. **Task records — dynamic, generated per execution.** `tasks/<task>/spec.md`, `status.md`, `decisions.md`, and `validation.md`. `init-task` scaffolds them from templates and the scenario configuration; the executing agent enriches and updates them during planning, implementation, and validation. They are also the recovery point when a session is interrupted.
+1. **Workspace registry — static, owned by this harness.** `repos.yaml` at the harness root. It records each registered repository's intrinsic facts — path, description, instruction sources, key files, checks — plus the baseline dependency graph (`edges`: directed existence assertions with evidence). The registry and its graph are accelerators, not authority: they seed candidate scoping and planning for free tasks, and never determine execution order or gate anything. Repositories few enough to traverse in one context do not strictly need the graph; it constrains discovery cost as the workspace grows.
+2. **Scenario definition — static, owned by this harness.** `scenarios/<scenario>/scenario.yaml` plus the scenario `README.md`. This is the coordination knowledge for one recurring class of task: which repositories participate, what order they change in, how they depend on each other, which repo-local instruction sources must be read, which key files matter, and which checks prove completion. It is authored once per scenario class and reused across every task.
+3. **Repo-local knowledge — static, owned by each business repo.** The files that `instruction_sources` points to (`AGENTS.md`, `CLAUDE.md`, `.trellis/workflow.md`, `CONTRIBUTING.md`, and similar), plus the contracts and code under `key_files`. This is the "how to work inside this repo" knowledge. It exists before any scenario run; the scenario only references it.
+4. **Task records — dynamic, generated per execution.** `tasks/<task>/spec.md`, `status.md`, `decisions.md`, and `validation.md`. `init-task` scaffolds them from templates and the scenario or registry configuration; the executing agent enriches and updates them during planning, implementation, and validation. They are also the recovery point when a session is interrupted.
 
-`scenario.yaml` is the glue between the two static layers: it binds harness-owned coordination knowledge to repo-owned local knowledge by pointing at instruction sources and key files inside each business repository.
+`repos.yaml` and `scenario.yaml` are the glues between the static layers: `repos.yaml` binds the workspace to its registered repositories; `scenario.yaml` binds harness-owned coordination knowledge to repo-owned local knowledge by pointing at instruction sources and key files inside each business repository.
 
-Only the task layer is generated at runtime, and the flow is one-directional: repo-local instructions are read as inputs, and what the agent learns from them is condensed into the cross-repo task spec. The harness never generates, rewrites, or writes back repo-local specs.
+Only the task layer is generated at runtime, and the flow is one-directional: repo-local instructions are read as inputs, and what the agent learns from them is condensed into the cross-repo task spec. The harness never writes back repo standing knowledge (the workflow documents and norms `instruction_sources` points to). Task-time repo artifacts — spec entries inside a repo's own spec framework — are authored document-level by the planning session per repo rules, runtime-reconciled by the repo-local implementation session, and referenced by workspace task files, never restated.
 
 The knowledge placement is coupled with an execution protocol: planning and spec review gates, a fixed status vocabulary, check failure handling, interruption safety, and the helper CLI. The scenario concept answers *where the knowledge lives*; the protocol answers *how execution stays safe and resumable*. Together they turn "how should this class of cross-repo delivery be coordinated" from something an agent rediscovers on every run into explicit, pre-authored, protocol-driven knowledge.
 
@@ -91,6 +92,8 @@ This harness is primarily for non-monorepo environments. If the affected project
 
 The strongest fit is when the repositories belong to different business domains and should remain independently owned, versioned, and reviewed, but a specific recurring scenario still requires coordinated development across them. In that case, the scenario deserves shared context without forcing the repositories into the same monorepo.
 
+When a cross-repo request does not match any declared scenario — a one-off need, or a shape that has not repeated yet — use the free-task entry instead of forcing a scenario: `init-task --free` scaffolds the same gated task files, planning scopes candidates from the workspace registry, and the identical execution layer (gates, per-repo subprocess agents, verdicts, checks) runs the task-declared topology. A free task is a first-class entry with the same fail-closed behavior; when the same shape keeps recurring, promote it into a scenario.
+
 Do not use this harness to replace a repository's own workflow. Each business repo still owns its code style, tests, generated files, commits, PRs, and CI.
 
 ## Agent-First Docs
@@ -100,10 +103,11 @@ This project treats agent readability as a primary design requirement. Agents sh
 Required reading order:
 
 1. `AGENTS.md`
-2. `scenarios/<scenario>/scenario.yaml`
-3. `scenarios/<scenario>/README.md`
+2. `repos.yaml`
+3. `scenarios/<scenario>/scenario.yaml` (scenario tasks)
+4. `scenarios/<scenario>/README.md` (scenario tasks)
 
-`AGENTS.md` defines the execution protocol and YAML semantics. Each scenario directory contains its own machine-readable execution template and human-readable SOP. Repository paths, roles, instruction sources, key files, and checks live inside the scenario so agents do not need a separate registry lookup. Task-specific data, such as expected branches and the concrete user request, lives under `tasks/`.
+`AGENTS.md` defines the execution protocol and YAML semantics, including the `repos.yaml` registry semantics. `repos.yaml` registers the workspace repositories and the baseline dependency graph. Each scenario directory contains its own machine-readable execution template and human-readable SOP. Repository paths, roles, instruction sources, key files, and checks live inside the scenario (scenario tasks) or the registry (free tasks) so agents do not need a separate lookup. Task-specific data, such as expected branches and the concrete user request, lives under `tasks/`.
 
 Within a scenario directory, the files have different jobs:
 
@@ -119,6 +123,7 @@ The README should not duplicate or override structural fields from `scenario.yam
 scenario-harness/
   AGENTS.md
   README.md
+  repos.yaml
   scenarios/
     example-contract-change/
       scenario.yaml
@@ -257,6 +262,21 @@ The helper can list matching task directories:
 bin/scenario-harness list-tasks billing-contract-change --incomplete-only
 ```
 
+Task-file structure can be linted at any time, read-only:
+
+```bash
+bin/scenario-harness check-task 2026-05-20-billing-contract-change
+```
+
+`templates/` doubles as the declarative schema for the four task files: the
+required-section baseline is extracted from the template skeletons at runtime,
+so adding or removing a template section changes what `check-task` requires on
+its next run with zero code change. Mode-specific requirements (free-task
+topology sections, mode-line and repo-resolution semantics) and error/warning
+grading stay in the command. Stage-level incompleteness — gates not yet
+recorded, an empty repo table, a legacy task without a Mode line — is
+warning-only and never changes the exit code; shape violations exit non-zero.
+
 ### 2. Run Preflight
 
 Before entering repo-local instructions or editing business code, run:
@@ -348,6 +368,43 @@ transport choice (public headless CLIs instead of SDK/app-server) are in
 [`docs/subprocess-agent-run.md`](docs/subprocess-agent-run.md); the mock
 self-test is `tests/run_mock_e2e.py`.
 
+### 6. Free Tasks: Requests That Match No Scenario
+
+When the request does not match a declared scenario (or is deliberately
+one-off), the same machinery runs with a task-declared topology instead of a
+pre-declared one:
+
+```bash
+bin/scenario-harness validate-registry
+bin/scenario-harness init-task --free 2026-05-20-rename-profile-field \
+  --request "Rename the profile field across api, web, and worker."
+```
+
+`init-task --free` validates the workspace registry instead of a scenario and
+writes `mode: free` into `status.md`. The planning pass then scopes candidates
+from `repos.yaml` (user-named repos plus baseline-graph in-edge neighbors),
+verifies repo reality, fills the status.md per-repo table — row order is the
+declared execution order — and initializes the dependency readiness section
+from task-level dependency edges. Declaring a repo single-repo additionally
+requires the workspace-level reverse lookup over all registered repos (see
+AGENTS.md Free Task Protocol). Both gates apply without exemption; Spec Review
+is the human control point that approves the generated topology.
+
+The remaining commands drop the scenario argument and read the task
+declaration plus the registry instead:
+
+```bash
+bin/scenario-harness preflight --task 2026-05-20-rename-profile-field
+bin/scenario-harness checks --task 2026-05-20-rename-profile-field --run
+bin/scenario-harness run --task 2026-05-20-rename-profile-field --agent claude-code
+```
+
+`run` refuses a free task without recorded gates exactly as it refuses a
+scenario task (exit 2, `planning_gate_missing` / `spec_review_gate_missing`),
+walks the task-declared order, and applies the same verdict and check gates.
+Discovering a new affected repo mid-run goes through the Replanning Protocol
+and a fresh Spec Review, never a silent expansion.
+
 ### 3. Execution Model
 
 The default execution model is a single agent running the scenario serially. Do not introduce multi-agent scheduling in the MVP workflow. For the honest limits of this model and a compatible per-repo session pattern, see "Single-Session Limits And Per-Repo Sessions".
@@ -367,21 +424,21 @@ That summary becomes the required context for the next repository unless debuggi
 
 The agent should:
 
-1. Read the required harness docs in order.
-2. Read `scenarios/<scenario>/scenario.yaml` to identify affected repository keys.
-3. Read `scenarios/<scenario>/README.md`.
-4. Run `bin/scenario-harness validate-scenario <scenario>`.
-5. Use `bin/scenario-harness plan-scenario <scenario>` to carry a compact execution summary.
-6. Create or select task files with `bin/scenario-harness init-task` or `bin/scenario-harness list-tasks`.
-7. Run `bin/scenario-harness preflight <scenario> --task <task-id>` before entering business repos.
-8. Follow `scenarios.<name>.order`.
-9. For each repo, read scenario-defined `repos.<repo>.instruction_sources`.
-10. Inspect scenario-defined `repos.<repo>.key_files`.
-11. Enrich `tasks/<task-id>/spec.md` with implementation notes, impact areas, risks, and validation focus learned from those key files before editing code.
-12. Implement repo-local changes according to the enriched task spec.
+1. Select the task mode with the Task Mode Selection Protocol in `AGENTS.md` (scenario task or free task) and record the mode plus reason in the task spec.
+2. Read the required harness docs in order. For a scenario task, read `scenarios/<scenario>/scenario.yaml` to identify affected repository keys; for a free task, read `repos.yaml` and scope candidates before planning.
+3. Read `scenarios/<scenario>/README.md` (scenario task).
+4. Run `bin/scenario-harness validate-scenario <scenario>` (scenario task) or `bin/scenario-harness validate-registry` (free task).
+5. Use `bin/scenario-harness plan-scenario <scenario>` to carry a compact execution summary (scenario accelerator; free tasks plan from the registry).
+6. Create or select task files with `bin/scenario-harness init-task` (or `init-task --free`) or `bin/scenario-harness list-tasks`.
+7. Run preflight before entering business repos: `bin/scenario-harness preflight <scenario> --task <task-id>`, or `preflight --task <task-id>` for a free task.
+8. Follow the authoritative order: scenario `order` (scenario task) or the task-declared topology (free task).
+9. For each repo, read the declared `repos.<repo>.instruction_sources` (registry entries fall back to common project files when absent).
+10. Inspect the declared `repos.<repo>.key_files`.
+11. Enrich `tasks/<task-id>/spec.md` with implementation notes, impact areas, risks, and validation focus learned from those key files before editing code. Author per-repo spec entries in the repo's own framework per the Spec Ownership Layering in AGENTS.md.
+12. Implement repo-local changes according to the enriched task spec, following the repo-local spec entries it references (runtime reconciliation first).
 13. Record user clarifications that affect goals, scope, implementation, validation, risks, or delivery order in `spec.md` before continuing.
 14. Record any material deviation from the enriched spec in `decisions.md` and reflect it back into `spec.md` before continuing.
-15. Run each affected repository's repo-local `checks`, preferably through `bin/scenario-harness checks <scenario> --run --task <task-id>`.
+15. Run each affected repository's repo-local `checks`, preferably through `bin/scenario-harness checks <scenario> --run --task <task-id>` (or `checks --task <task-id> --run` for a free task).
 16. Update task files under `tasks/<task-id>/`.
 17. Report diff scope, validation results, risks, and delivery order.
 

@@ -1,0 +1,70 @@
+# Workspace repository registry.
+#
+# Field semantics, path resolution rules, the instruction_sources common-file
+# fallback, the missing-checks validation-gap rule, and the baseline-graph
+# boundary constraints are defined in AGENTS.md, section "YAML Semantics —
+# repos.yaml". The registry and its baseline graph are accelerators, never
+# authority: execution order comes from scenario.yaml `order` (scenario tasks)
+# or the task's own declared topology (free tasks). No command gates or
+# reorders work because of edge content.
+#
+# The three example repositories below are also declared by
+# scenarios/example-contract-change/scenario.yaml. The five intrinsic fields
+# are intentionally identical in both files; validate-scenario and
+# validate-registry emit warning-level divergence findings if they drift.
+
+repos:
+  contract-repo:
+    path: ../profile-api
+    description: Owns the source-of-truth contract and example implementation.
+    instruction_sources:
+      - AGENTS.md
+      - .trellis/workflow.md
+      - CONTRIBUTING.md
+      - README.md
+    key_files:
+      - src/contracts/
+      - openapi.yaml
+    checks:
+      - npm run typecheck
+      - npm test
+  consumer-repo:
+    path: ../profile-web
+    description: Consumes generated contract clients in the product UI.
+    instruction_sources:
+      - AGENTS.md
+      - CLAUDE.md
+      - CONTRIBUTING.md
+      - README.md
+    key_files:
+      - src/api/
+      - src/generated/
+    checks:
+      - npm run typecheck
+      - npm test
+  worker-repo:
+    path: ../notification-worker
+    description: Consumes contract payloads in async notification flows.
+    instruction_sources:
+      - AGENTS.md
+      - README.md
+      - Makefile
+    key_files:
+      - workers/
+      - events/
+    checks:
+      - npm run typecheck
+      - npm test
+
+# Baseline dependency graph: directed existence assertions only.
+# `from` depends on / consumes `to`. Direction is consumption direction, never
+# an ordering obligation. Purpose-specific dependencies stay in scenario
+# `depends_on`; this graph holds only purpose-independent relations.
+
+edges:
+  - from: consumer-repo
+    to: contract-repo
+    evidence: "package.json depends on @company/profile-client"
+  - from: worker-repo
+    to: contract-repo
+    evidence: "consumes contract payload types for notification events"

@@ -15,7 +15,7 @@ This project treats agent readability as a primary design requirement.
 ## Core Rules
 
 - Do not assume the current directory is a business repository.
-- Business code lives in external repositories declared by the active scenario.
+- This harness coordinates a multi-repo workspace: business repositories are registered in `repos.yaml` and may additionally be declared by a scenario. Repositories may only be entered and edited through the task protocols.
 - Treat this harness as a standalone coordination repository, not as a business repository.
 - Before editing any business repository, read its repo-local instructions.
 - Repo-local instructions may come from Trellis, `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `README.md`, `Makefile`, package scripts, or scenario-defined files.
@@ -26,37 +26,38 @@ This project treats agent readability as a primary design requirement.
 
 ## Execution Protocol
 
-1. Identify the scenario using the Scenario Identification Protocol.
-2. Read `scenarios/<scenario>/scenario.yaml`.
-3. Read `scenarios/<scenario>/README.md`.
-4. Run `bin/scenario-harness validate-scenario <scenario>` from the harness root before creating a new task directory.
+1. Select the task mode using the Task Mode Selection Protocol (scenario task or free task).
+2. For a scenario task, read `scenarios/<scenario>/scenario.yaml`, then `scenarios/<scenario>/README.md`. For a free task, read `repos.yaml`.
+3. Run validation from the harness root before creating a new task directory: scenario tasks run `bin/scenario-harness validate-scenario <scenario>`; free tasks run `bin/scenario-harness validate-registry`.
    - If it reports errors, stop before editing business repositories.
-   - If resuming an existing task, record `current step: scenario_invalid` and the validation errors in `tasks/<task>/status.md`.
-   - If creating a new task, do not create the task directory until the scenario validates.
+   - If resuming an existing task, record `current step: scenario_invalid` (scenario task) or `current step: blocked` with the validation errors (free task) in `tasks/<task>/status.md`.
+   - If creating a new task, do not create the task directory until validation passes.
    - Use `--json` when machine-readable output is useful.
-5. Create or locate a task directory under `tasks/`, then set `current step` to `scenario_validated`.
-6. Inspect git status for all affected repositories. Prefer `bin/scenario-harness preflight <scenario> --task <task-id>`, then set `current step` to `preflight_complete` if it succeeds.
-7. Complete the Planning Pass Protocol for all affected repositories.
-8. Confirm the Planning Gate is recorded as complete in `tasks/<task>/status.md`.
+4. Create or locate a task directory under `tasks/`, then set `current step` to `scenario_validated` (scenario task) or `task_created` (free task, before planning).
+5. Inspect git status for all affected repositories. Prefer `bin/scenario-harness preflight <scenario> --task <task-id>` (scenario task) or `bin/scenario-harness preflight --task <task-id>` (free task), then set `current step` to `preflight_complete` if it succeeds.
+6. Complete the Planning Pass Protocol for all affected repositories.
+7. Confirm the Planning Gate is recorded as complete in `tasks/<task>/status.md`.
    - Do not edit business repository code before this gate is complete.
-9. Complete the Spec Review Gate Protocol.
+8. Complete the Spec Review Gate Protocol.
    - Do not edit business repository code before this gate is approved or explicitly skipped by the user.
-10. Modify repositories in scenario-defined order using the Implementation Repo Entry Protocol.
-11. Run repo-local checks and follow the Check Failure Protocol for any failure.
-12. Mark the task complete only when the Completion State Protocol is satisfied.
+9. Modify repositories in the authoritative order using the Implementation Repo Entry Protocol: scenario `order` for scenario tasks, the task-declared topology for free tasks.
+10. Run repo-local checks and follow the Check Failure Protocol for any failure.
+11. Mark the task complete only when the Completion State Protocol is satisfied.
 
 ## Agent Helper CLI
 
 Use `bin/scenario-harness` for mechanical checks before doing manual reasoning.
 
-- `bin/scenario-harness validate-scenario <scenario>` validates the selected scenario, resolved repository paths, checks, and basic field shapes.
+- `bin/scenario-harness validate-scenario <scenario>` validates the selected scenario, resolved repository paths, checks, and basic field shapes. When `repos.yaml` exists it also emits warning-level consistency findings (Q3-B); warnings never change the exit code.
 - `bin/scenario-harness validate-scenario <scenario> --json` emits stable JSON for agents that want to parse findings.
-- `bin/scenario-harness init-task <scenario> [task-id] --request "..."` creates `spec.md`, `status.md`, `validation.md`, and `decisions.md` from the selected scenario without overwriting existing task files.
-- `bin/scenario-harness preflight <scenario> --task <task-id>` inspects affected repository git status, task branch gates, missing instruction sources, and missing key files, then updates `status.md` and `validation.md`.
-- `bin/scenario-harness plan-scenario <scenario>` prints the compact execution plan: repo order, paths, instruction sources, key files, and checks.
-- `bin/scenario-harness list-tasks <scenario>` lists matching task directories newest first for resume decisions.
-- `bin/scenario-harness checks <scenario>` lists repo-local checks; add `--run --task <task-id>` to execute checks and update `validation.md`.
-- `bin/scenario-harness run <scenario> --task <task-id>` executes the gated per-repo subprocess agent layer: it refuses to start unless the Planning Gate and Spec Review Gate are recorded in `status.md`, then walks repositories in scenario order, spawns the selected agent backend (`--agent claude-code|codex|gemini`) inside each repository, runs repo checks itself, and records agent telemetry and stage × category failures in task files. See `docs/subprocess-agent-run.md`.
+- `bin/scenario-harness validate-registry` validates the workspace registry `repos.yaml`: structure, edge endpoints, `(from, to)` uniqueness, non-empty evidence, absence of task-specific values, and path resolution; it also cross-checks scenario repo keys and intrinsic fields against the registry (Q4-a) at warning level.
+- `bin/scenario-harness init-task <scenario> [task-id] --request "..."` creates `spec.md`, `status.md`, `validation.md`, and `decisions.md` from the selected scenario without overwriting existing task files. `bin/scenario-harness init-task --free <task-id> --request "..."` scaffolds the same four files for a free task: it validates the registry instead of a scenario and records `mode: free`; branch rules (default `scenario/<task-id>`, `--branch`, `--repo-branch`) are unchanged.
+- `bin/scenario-harness preflight <scenario> --task <task-id>` inspects affected repository git status, task branch gates, missing instruction sources, and missing key files, then updates `status.md` and `validation.md`. Without a scenario argument, `preflight --task <task-id>` drives the preflight from the task declaration: free tasks resolve their repo set from the status table plus the registry.
+- `bin/scenario-harness plan-scenario <scenario>` prints the compact execution plan: repo order, paths, instruction sources, key files, and checks. Scenario accelerator only; free tasks plan from `repos.yaml` directly.
+- `bin/scenario-harness list-tasks <scenario>` lists matching task directories newest first for resume decisions. The scenario argument is optional: without it, free tasks are listed (mode filter, replacing string haystack matching; `--all` lists every mode).
+- `bin/scenario-harness checks <scenario>` lists repo-local checks; add `--run --task <task-id>` to execute checks and update `validation.md`. Without a scenario argument, `checks --task <task-id>` uses the task-declared repo set with checks from `repos.yaml`.
+- `bin/scenario-harness check-task <task-id>` lints the structure of `tasks/<task-id>` with `templates/` as the declarative schema source: the common-core required-section baseline is extracted from the template skeletons at runtime, so adding or removing a template section changes the schema on the next run with zero code change (mode ownership of sections and error/warning grading stay in the command code; the lint checks section existence, never content). It applies to both modes with the same core: the four task files exist, required sections exist, `current step` is inside the Status Step Vocabulary, the per-repo status table has a legal shape (column count, branch cells, duplicate rows), and the gate sections exist. Three checks are mode-aware: the `Mode:` line value (and scenario existence), table rows resolving against scenario.yaml (scenario tasks) vs `repos.yaml` (free tasks), and mode-specific spec sections (`Scenario Order` vs `Task-Declared Topology` + `Candidate Scoping`). Shape violations are errors (exit 2); stage-level incompleteness — a legacy task without a Mode line, unrecorded gates, an empty repo table, an unset current step, free-task Candidate Scoping still TBD — is warning-only and never changes the exit code. Purely read-only and never writes files; supports `--json`.
+- `bin/scenario-harness run <scenario> --task <task-id>` executes the gated per-repo subprocess agent layer: it refuses to start unless the Planning Gate and Spec Review Gate are recorded in `status.md`, then walks repositories in scenario order, spawns the selected agent backend (`--agent claude-code|codex|gemini`) inside each repository, requires each child agent to end with a structured verdict file (`tasks/<task>/verdicts/<repo>.md`) where a missing, malformed, or self-reported-blocked verdict blocks the run, runs repo checks itself, and records agent telemetry and stage × category failures in task files. The scenario argument is optional: `run --task <task-id>` reads the mode from the task's `status.md`; a free task builds its context from the task declaration plus `repos.yaml` and walks the task-declared order, with gates, verdicts, and checks behaving identically. See `docs/subprocess-agent-run.md`.
 
 Exit codes:
 
@@ -66,13 +67,30 @@ Exit codes:
 
 The helper CLI itself never edits business repositories and never changes git state; `run` only delegates gated repo-local edits to child agent processes started inside each repository.
 
-## Scenario Identification Protocol
+## Task Mode Selection Protocol
 
-1. If the user explicitly names a scenario, use that scenario.
+1. If the user explicitly names a scenario, use that scenario (scenario task).
 2. If the user asks to resume, continue, or finish existing work without naming a scenario, inspect `tasks/` and scenario names to find matching incomplete tasks.
 3. If the user does not name a scenario, inspect `scenarios/*/scenario.yaml` and `scenarios/*/README.md` only enough to find plausible matches.
 4. If exactly one scenario clearly matches the request, select it and record the selection reason in `tasks/<task>/spec.md` when the task directory exists.
-5. If no scenario or multiple scenarios plausibly match, ask the user to choose before creating a task directory, entering business repositories, or editing files.
+5. If no scenario or multiple scenarios plausibly match, ask the user to choose between the options instead of only asking for a scenario name: proceed as a free task (works for no-match and deliberate one-off requests), or pick one of the matching scenarios. A free task is a protocolized first-class entry, not a bypass around the protocols: it runs the same Planning Gate, Spec Review Gate, branch gates, verdicts, and checks.
+6. Record the mode and the selection reason in `tasks/<task>/spec.md` for both modes (`mode: scenario:<name>` or `mode: free`).
+7. Ask before creating a task directory, entering business repositories, or editing files whenever the choice is ambiguous.
+
+## Free Task Protocol
+
+Free tasks handle cross-repo requests whose topology is not pre-declared by any scenario. They share every gate, verdict, check, and completion semantic with scenario tasks; the only differences are where the topology comes from and how the dependency readiness section is initialized.
+
+1. **Mode selection**: Task Mode Selection Protocol; record `mode: free` and the reason in `spec.md`.
+2. **Initialization**: `bin/scenario-harness init-task --free <task-id> --request "..."` scaffolds the same four files and writes `mode: free` into `status.md`. Free tasks are named `YYYY-MM-DD-<short-topic>` (no scenario suffix). Expected-branch rules match scenario tasks: default `scenario/<task-id>`, or `--branch` / `--repo-branch` overrides recorded as defaults the Planning Pass materializes into per-repo rows.
+3. **Candidate scoping**: read `repos.yaml`. Start from the user-named repos and collect candidates along baseline-graph in-edges (repos consuming a changed repo's outputs). Out-edge upstreams are included only when the request itself requires upstream changes; never traverse out-edges only. Record each candidate and its provenance (edge evidence or user naming) in `spec.md`. When the graph is empty or `repos.yaml` declares no edges, the candidate set is all registered repos or the user-named set.
+4. **Planning Pass**: verify repo reality for each candidate (actual dependencies, not just graph edges), then determine the affected repo set, order, per-repo expected changes, contracts, downstream impact, and validation strategy; write them into `spec.md` and the `status.md` per-repo table — row order in that table is the task-declared execution order consumed by preflight, checks, and run. Initialize the dependency readiness section from the task-level dependency edges produced by planning. Record exclusion reasons for candidates not selected (auditable, recoverable). Then author per-repo spec entries per the Spec Ownership Layering.
+5. **Single-repo adjudication duty**: a single-repo conclusion is derived, never assumed. Adjudge single-repo only when all three hold: (a) a workspace-level reverse lookup mechanically scanned all registered repos for references to X's outputs (imports, manifest dependencies, API paths, event names) with no hits — graph hits may narrow the scan, but an empty in-edge set alone is never sufficient; (b) every in-edge neighbor of X was verified against repo reality and its exclusion recorded; (c) out-edge upstreams genuinely need no change. Persist evidence and exclusions in `spec.md`.
+6. **Gates**: Planning Gate and Spec Review Gate apply without exemption. For a free task, Spec Review is the human control point that approves the generated topology — it replaces scenario-mode's "topology pre-declared by a human", it is not extra bureaucracy. Review objects are the same in both modes: the workspace cross-repo spec, each repo's spec entries, and per-repo spec diffs (see Spec Ownership Layering).
+7. **Implementation**: Implementation Repo Entry Protocol per repo, with repo paths resolved from `repos.yaml`; the child agent first performs runtime reconciliation, then implements from the repo-local spec entries. `run --task <task-id>` walks the task-declared order through the same per-repo subprocess → verdict → checks chain as scenario tasks.
+8. **Mid-run expansion**: discovering a new affected repo applies the Replanning Protocol (`replanning_required` → replanning → spec review re-approval → continue); record the expansion and reason in `decisions.md`.
+
+Fail-closed invariants are mode-independent: `run` rejects a free task without recorded gates exactly as it does a scenario task (exit 2, `planning_gate_missing` / `spec_review_gate_missing`); a repo counts as complete only with exit 0 plus a valid `ok` verdict plus passing checks.
 
 ## Status Step Vocabulary
 
@@ -112,11 +130,11 @@ Append to Status History whenever `current step` changes. Do not replace the his
 
 ## Planning Pass Protocol
 
-Before editing code in any business repository, complete a lightweight cross-repo planning pass for all affected repositories in scenario-defined order.
+Before editing code in any business repository, complete a lightweight cross-repo planning pass for all affected repositories in the authoritative order (scenario `order` for scenario tasks, the task-declared topology for free tasks).
 
 1. Set `current step` to `planning_in_progress` in `tasks/<task>/status.md`.
 2. For each affected repository:
-   - resolve the repo path from `scenarios/<scenario>/scenario.yaml`
+   - resolve the repo path from `scenarios/<scenario>/scenario.yaml` (scenario task) or `repos.yaml` (free task)
    - run `git status` in that repo
    - verify the current branch exactly matches the task-defined branch before reading further repo-local context
    - read scenario-defined local instructions that exist, recording skipped instruction files in `tasks/<task>/status.md`
@@ -139,9 +157,11 @@ Before editing code in any business repository, complete a lightweight cross-rep
    - validation commands or documented validation gaps
    - known unknowns
    - downstream repos affected
-5. Update `tasks/<task>/decisions.md` for planning decisions that affect compatibility, migration, delivery order, or risk.
-6. If the planning pass reveals missing task-specific dependency values, branch mismatches, conflicting repo-local instructions, or unresolved design choices that would make implementation risky, set `current step` to `planning_blocked`, record the blocker, and ask for direction.
-7. When the planning pass is complete and unblocked, record a Planning Gate in `tasks/<task>/status.md`:
+5. Author repo-local spec entries per the Spec Ownership Layering: the single planning session writes each repo's spec entries directly into the repo framework's documented location (document-level compliance). The workspace task spec holds only the cross-repo layer plus references; it never restates per-repo design.
+6. Update `tasks/<task>/decisions.md` for planning decisions that affect compatibility, migration, delivery order, or risk.
+7. Initialize the dependency readiness section of `tasks/<task>/status.md`: scenario tasks initialize from scenario `depends_on`; free tasks initialize from the task-level dependency edges produced by this planning pass.
+8. If the planning pass reveals missing task-specific dependency values, branch mismatches, conflicting repo-local instructions, or unresolved design choices that would make implementation risky, set `current step` to `planning_blocked`, record the blocker, and ask for direction.
+9. When the planning pass is complete and unblocked, record a Planning Gate in `tasks/<task>/status.md`:
    - `current step: planning_complete`
    - repositories reviewed
    - instruction files read and skipped
@@ -161,6 +181,17 @@ Lightweight planning is sufficient only when all of these are true:
 - the validation strategy covers the expected changes or records a validation gap and risk
 - downstream impact is known for each touched output, or the unknown is recorded as a blocker
 
+### Delegation Rules For The Planning Pass (Ingestion / Synthesis)
+
+The single-context constraint covers synthesis and adjudication, not ingestion. Both modes share these rules:
+
+- **Ingestion may be delegated to read-only subagents**: reading large code spans, cross-repo grep, call-chain tracing, manifest/reference scanning, and single-repo workspace reverse lookups — heavy-ingestion, light-decision mechanical collection. Four boundaries:
+  1. read-only — zero writes to business repositories;
+  2. digests must carry file:line citations so the main session keeps spot-check ability;
+  3. results are persisted to task notes under `tasks/<task>/` (recovery-point principle), never left only in conversation;
+  4. allowed, not mandated — for small repos direct reading is better (one less lossy hop). Trigger heuristics: reads exceed a context budget, independent traces can run in parallel, or the pattern is purely mechanical.
+- **Synthesis is not delegable**: topology adjudication, contract decisions, cross-repo spec writing, per-repo spec entries, and single-repo adjudication happen in the single planning session. Free-task topology is generated in exactly this phase.
+
 ## Planning Resume Protocol
 
 Use this protocol when the user responds to a `planning_blocked` state.
@@ -172,6 +203,30 @@ Use this protocol when the user responds to a `planning_blocked` state.
 5. Update the per-repo status table, dependency readiness section, and Planning Gate fields that were affected by the blocker.
 6. If the blocker is resolved and no new planning blocker exists, record `current step: planning_complete`.
 7. Run the Spec Review Gate Protocol before editing business repository code.
+
+## Spec Ownership Layering
+
+Task design knowledge is owned in two layers, and the workspace never restates the per-repo layer:
+
+| Content | Owner | Shape in the other layer |
+| --- | --- | --- |
+| Affected repo set, order, dependency edges | workspace task spec | n/a (home layer) |
+| Cross-repo contracts, interface changes, compatibility decisions | workspace task spec | n/a (home layer) |
+| Cross-repo validation strategy, single-repo adjudication evidence, candidate and exclusion records | workspace task spec | n/a (home layer) |
+| Per-repo implementation design (repo has a local spec framework) | repo-local framework (Trellis / Spec Kit / OpenSpec …) | workspace holds a reference (repo, path, coverage) |
+| Per-repo implementation design (no framework, or framework cannot create entries document-level) | workspace task spec | inline fallback, transcribed at implementation |
+
+Repo-local spec entries are authored by the single planning session at planning time (see Planning Pass Protocol step 5), in document-level compliance: read the workflow documents declared in `instruction_sources` and hand-write entries in the framework's documented format. Implementation-phase child agents read the finished entries, reconcile, and implement — they do not design. Rationale: coherence errors cannot be auto-repaired, format errors can — format deviations are visible in Spec Review and correctable with framework tooling at implementation, while two specs describing the same contract differently have no machine backstop.
+
+**Runtime reconciliation** (first step of implementation): the child agent starts in the repo (runtime active), runs the framework's own scaffold/registration flow as its instruction sources document, then merges the planning-authored content — planning content is authoritative and the reconciliation diff stays visible in the repo. If a framework fundamentally cannot accept document-level entries, that repo's design falls back to inline workspace content transcribed at implementation; the fallback must be recorded explicitly in `spec.md` ("this repo's framework does not support document-level creation"); silent downgrade is not allowed.
+
+Three boundaries, shared by both modes, so spec entries cannot become a backdoor around the implementation gates:
+
+1. **Location whitelist**: entries may only be written into the repo framework's declared spec directories (derived from `instruction_sources` / `key_files`). Writes outside the whitelist remain covered by the "no business-repo edits before Spec Review approval" prohibition; business repo code is never edited before approval — whitelisted spec entries are the review medium itself.
+2. **Branch precondition**: spec entries are written on the preflight-verified task branch, on the same branch and in the same delivery batch as the implementation.
+3. **Diff review**: the Spec Review checklist includes per-repo review of spec-entry diffs; out-of-scope writes become visible in review.
+
+Write-back rule: the harness never writes back repo standing knowledge (the workflow documents and norms `instruction_sources` point to). Task-time repo artifacts (spec entries) are document-level created by the planning session per repo rules and runtime-reconciled by the repo-local session; workspace task files reference them and never restate them.
 
 ## Spec Review Gate Protocol
 
@@ -185,20 +240,22 @@ After the Planning Gate is complete and before editing business repository code:
    - downstream impact
    - validation strategy
    - known risks and unresolved questions
-3. Wait for user approval before implementation unless review is explicitly skipped by the user.
+   - repo-local spec entry references per repo and their diffs (see Spec Ownership Layering; walk each repo's spec-entry diff — out-of-scope writes must be visible here)
+3. Business repo code remains off-limits before approval. The only permitted pre-approval writes inside a business repo are spec entries inside the location whitelist (Spec Ownership Layering boundary 1): they are the review medium itself, not an exemption from the gate.
+4. Wait for user approval before implementation unless review is explicitly skipped by the user.
    - The skip must come from the current conversation or from task files that existed before the current agent run.
    - Agent-written task updates in the current run cannot authorize skipping review.
    - If the authorization source is ambiguous, wait for user approval.
-4. Record the approval, requested changes, or explicit user-authorized skip in `tasks/<task>/status.md`.
-5. If the user changes scope or design during review, update `tasks/<task>/spec.md` and `tasks/<task>/decisions.md` before implementation.
-6. Set `current step` to `spec_review_approved` only after approval is recorded or the explicit skip is recorded.
+5. Record the approval, requested changes, or explicit user-authorized skip in `tasks/<task>/status.md`.
+6. If the user changes scope or design during review, update `tasks/<task>/spec.md` and `tasks/<task>/decisions.md` before implementation.
+7. Set `current step` to `spec_review_approved` only after approval is recorded or the explicit skip is recorded.
 
 ## Implementation Repo Entry Protocol
 
 Run this protocol for each repository during the implementation pass, even if the same repo was already inspected during planning.
 
 1. Set `current step` to `implementing:<repo-key>` in `tasks/<task>/status.md`.
-2. Resolve the repo path from `scenarios/<scenario>/scenario.yaml`.
+2. Resolve the repo path from `scenarios/<scenario>/scenario.yaml` (scenario task) or `repos.yaml` (free task).
 3. Run `git status` in that repo.
 4. Check the current branch against the expected branch recorded in `tasks/<task>/status.md`.
    - The branch check is an exact string match.
@@ -221,16 +278,17 @@ Run this protocol for each repository during the implementation pass, even if th
    - `pyproject.toml`
    - `Cargo.toml`
    - `go.mod`
-8. Reread or deepen scenario-defined `repos.<repo>.key_files` as needed for implementation.
+8. Reread or deepen scenario-declared (scenario task) or registry-declared (free task) `repos.<repo>.key_files` as needed for implementation.
 9. Add any new repo-local implementation notes, impact areas, risks, and validation focus to `tasks/<task>/spec.md`.
-10. Implement the repo-local change according to the enriched task spec.
-11. If implementation requires a material deviation from the enriched spec, record the reason in `tasks/<task>/decisions.md` and update `tasks/<task>/spec.md` before continuing.
-12. Set `current step` to `validating:<repo-key>` before running checks.
-13. Run repo-defined checks.
-14. Record check output summary in `tasks/<task>/validation.md`.
-15. If checks pass, update the per-repo status table and record scenario-declared outputs for this repository as ready, unchanged, skipped, or blocked in the dependency readiness section.
-16. If checks pass, set `current step` to `repo_complete:<repo-key>`.
-17. Do not commit unless the user or scenario explicitly requests commits.
+10. Perform runtime reconciliation (Spec Ownership Layering): if planning-authored spec entries exist for this repo, run the repo framework's scaffold/registration flow as its instruction sources document, then merge the planning-authored content (planning content authoritative; reconciliation diff visible in the repo). If a document-level-creation fallback was recorded, transcribe the inline design instead.
+11. Implement the repo-local change according to the enriched task spec, following the repo-local spec entries it references instead of re-designing them.
+12. If implementation requires a material deviation from the enriched spec, record the reason in `tasks/<task>/decisions.md` and update `tasks/<task>/spec.md` before continuing.
+13. Set `current step` to `validating:<repo-key>` before running checks.
+14. Run repo-defined checks.
+15. Record check output summary in `tasks/<task>/validation.md`.
+16. If checks pass, update the per-repo status table and record scenario-declared outputs for this repository as ready, unchanged, skipped, or blocked in the dependency readiness section.
+17. If checks pass, set `current step` to `repo_complete:<repo-key>`.
+18. Do not commit unless the user or scenario explicitly requests commits.
 
 ## Check Failure Protocol
 
@@ -262,7 +320,7 @@ The active task directory is the recovery point for a scenario run.
 2. If the user asks to continue, resume, or finish existing work without naming a task directory, inspect `tasks/` for the matching scenario and choose the most recent task directory whose `current step` is not `complete`.
 3. If exactly one plausible task directory exists for the scenario, use it.
 4. If multiple plausible task directories exist and the user did not identify one, ask which task to continue before editing repositories.
-5. If no plausible task directory exists, create a new one under `tasks/` using `YYYY-MM-DD-<scenario>` or `YYYY-MM-DD-<scenario>-<short-topic>` when the task needs distinction.
+5. If no plausible task directory exists, create a new one under `tasks/` using `YYYY-MM-DD-<scenario>` or `YYYY-MM-DD-<scenario>-<short-topic>` when the task needs distinction. Free tasks are named `YYYY-MM-DD-<short-topic>` (no scenario suffix).
 
 When creating a new task directory:
 
@@ -276,7 +334,7 @@ When creating a new task directory:
 - Scenarios do not define working branches; tasks define them.
 - If the user request or selected task files do not specify the expected branch for every affected repository, ask the user to clarify before entering or editing any business repository.
 - Do not infer expected branches from the repository's current branch, default branch, scenario name, or task id.
-- Fill `spec.md` with the scenario, user request, scope, non-goals, assumptions, repository order, and execution steps.
+- Fill `spec.md` with the task mode (`scenario:<name>` or `free`) and selection reason, the scenario (scenario tasks), user request, scope, non-goals, assumptions, repository order, and execution steps.
 - Record user clarifications that affect task goals, scope, implementation, validation, risks, or delivery order in `spec.md` before continuing implementation.
 - Before implementing code in any repository, enrich `spec.md` through a lightweight cross-repo planning pass over all affected repositories after branch verification and repo-local instruction review.
 - The planning pass should identify contracts, downstream consumption, expected per-repo changes, compatibility constraints, risks, and validation strategy without requiring implementation-level deep reading of every file.
@@ -301,7 +359,7 @@ Use the task files to determine completed work, current blockers, checked repo s
 
 ## Replanning Protocol
 
-Use this protocol when scenario files, task scope, dependency assumptions, or user clarifications invalidate part of an existing task plan.
+Use this protocol when scenario files, task scope, dependency assumptions, or user clarifications invalidate part of an existing task plan. It applies equally when a free task discovers a new affected repository mid-implementation: the expanded repo set and the reason are recorded in `decisions.md`, and the Spec Review Gate must re-approve before the new repos are entered.
 
 1. Set `current step` to `replanning_in_progress`.
 2. Identify the affected repositories, dependency edges, key files, checks, and task-file sections.
@@ -403,6 +461,25 @@ Path resolution:
   - `Completion Criteria` defines how agents know the scenario task is complete, including expected task-file evidence, required checks or documented skip reasons, cross-repo behavior to verify, and residual risks to report.
 - If `scenario.yaml` and the scenario README conflict on structural execution, follow `scenario.yaml` unless doing so would be destructive or unsafe.
 - If they conflict on business intent, compatibility requirements, or completion criteria, stop and report the conflict before editing repositories.
+
+`repos.yaml` (workspace registry):
+
+- `repos.yaml` lives at the harness root. It is optional for scenario tasks (scenario self-containment is unchanged) and required for free tasks.
+- `repos` is a mapping of every repository registered in the workspace. Repo keys are stable workspace-local identifiers; when a repo also appears in a scenario, the same key must be used in both files so cross-checks can compare them.
+- `repos.<repo-key>.path` is the local filesystem path for the repository. Resolution follows the same rules as scenario paths: absolute paths are used as-is, relative paths resolve against the harness root, shell-style variables are invalid.
+- `repos.<repo-key>.description` is one-sentence context for agents and humans.
+- `repos.<repo-key>.instruction_sources` are read in order when entering the repo for a free task. When the list is absent or empty, fall back to the common project files: `README.md`, `CONTRIBUTING.md`, `package.json`, `Makefile`, `pyproject.toml`, `Cargo.toml`, `go.mod`.
+- `repos.<repo-key>.key_files` lists workspace-relevant files or directories to inspect first.
+- `repos.<repo-key>.checks` are commands to run after repo-local changes in free tasks. When the list is absent or empty, no checks are declared for that repo and the task must record a validation gap in `validation.md`.
+- The five intrinsic fields (`path`, `description`, `instruction_sources`, `key_files`, `checks`) may duplicate scenario.yaml entries. `validate-registry` and `validate-scenario` emit warning-level divergence findings (`registry_field_divergence`, `repo_not_in_registry`) when a duplicated repo drifts or a scenario repo is missing from the registry; duplication itself is allowed and never gates execution.
+- `repos.<repo-key>` and edge mappings must not declare task-specific dependency values (the same ban list as `scenario.yaml`). Ask a human to confirm those values for the active task and record them in task files.
+- `edges` is the baseline dependency graph: a list of mappings with `from`, `to`, and `evidence`.
+  - `from` depends on / consumes `to`. An edge asserts only that this dependency relation exists; direction encodes consumption, never an ordering obligation ("from must change after to" is not a thing).
+  - `(from, to)` is the natural key: duplicate pairs are validation errors, edges carry no id. `evidence` is a non-empty free-form string citing how the dependency is observable (manifest line, import, generated-code source); its text is never parsed for semantics.
+  - Edge endpoints must reference keys declared under `repos`.
+  - The graph has no ordering authority and gates nothing. Execution order and dependency direction come solely from scenario.yaml `order` + `depends_on` (scenario tasks) or the task's own declared topology (free tasks). No command may refuse to run or reorder work because of edge content; the graph's only use is seeding Planning Pass candidate neighborhoods.
+  - Purpose-specific dependencies (the `reason`-bearing `depends_on` of a scenario) stay in scenario.yaml. The baseline graph holds only purpose-independent relations that recur across scenarios.
+  - The graph tolerates drift: an out-of-date graph at worst mis-seeds the candidate set, which the Planning Pass corrects by verifying repo reality. Missing edges are the dangerous direction, so curation prefers extra edges over missing ones, and the protocol duties (workspace-level reverse lookup in the Free Task Protocol) all aim at the missing-edge side.
 
 ## Delivery Defaults
 
