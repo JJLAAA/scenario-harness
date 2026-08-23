@@ -1,5 +1,7 @@
 # Goal Contract v1
 
+> 历史迁移说明：本文件保留项目更名为 RepoMesh 前的名称与命令，以维持当时验收契约的可追溯性；当前 CLI 为 `bin/repomesh`。
+
 状态：GOAL READY（待确认）
 
 > 本文件是待执行契约。收到"确认 Goal Contract"后按此执行；验收对象为当前工作区的 `bin/scenario-harness`（verdict 门禁版）。

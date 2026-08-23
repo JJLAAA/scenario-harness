@@ -1,5 +1,7 @@
 # Goal Contract v1
 
+> 历史迁移说明：本文件保留项目更名为 RepoMesh 前的名称与命令，以维持当时决策的可追溯性；当前 CLI 为 `bin/repomesh`。
+
 状态：GOAL CONTRACT 已确认（2026-08-22）
 
 > 本文件是定稿契约，可作为后续执行会话的自包含输入。执行范围仅限本 harness 仓库直改（harness 自研不属于任何 scenario，不进 scenario 协议）；不主动 commit。

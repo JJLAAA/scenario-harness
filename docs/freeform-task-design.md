@@ -2,7 +2,7 @@
 
 本文件是"双模式任务支持"的设计文档：在现有 scenario 预声明拓扑模式之外，支持自由定义的
 开发任务。它不改动已实现机制的行为承诺，只新增一个入口层与一个工作区级索引层。执行层
-（`bin/scenario-harness run`、verdict、checks、gates）原样复用，见
+（`bin/repomesh run`、verdict、checks、gates）原样复用，见
 [`docs/subprocess-agent-run.md`](subprocess-agent-run.md)。
 
 对应 Goal Contract：`docs/goal-contracts/2026-08-22-multi-repo-workspace-design-v2.md`。
@@ -11,7 +11,7 @@
 ## 背景与动机
 
 现状：harness 只协调已声明的 scenario。七个 CLI 子命令全部要求 scenario 参数并从
-`scenarios/<scenario>/scenario.yaml` 加载（`bin/scenario-harness:186-192`、`:2588-2755`）；
+`scenarios/<scenario>/scenario.yaml` 加载（`bin/repomesh:186-192`、`:2588-2755`）；
 `depends_on` 校验在单份 scenario.yaml 内闭合（`:328-385`）。scenario 的准确语义是
 **协调域声明**：它固化拓扑（repo 集、顺序、依赖边、指令来源、关键文件、检查），禁止
 模板化任务内容（branch/commit/version 等任务级取值）；任务方案本身一直是由 Planning
@@ -288,7 +288,7 @@ Vocabulary 一个词都不需要新增——词汇表本身与模式无关，这
 | `init-task` | 增加 `--free` 变体：跳过 scenario 校验（改跑 validate-registry），task 文件记录 `mode: free`，分支规则不变；scenario 用法原样 |
 | `preflight` | 新增按 `--task` 驱动的模式：repo 集来自 task 声明 + registry 解析；scenario 用法原样 |
 | `plan-scenario` | 不变（scenario 专用加速器） |
-| `list-tasks` | scenario 参数变可选：缺省列出自由任务（mode 过滤，替代现在的字符串 haystack 匹配 `bin/scenario-harness:1006`） |
+| `list-tasks` | scenario 参数变可选：缺省列出自由任务（mode 过滤，替代现在的字符串 haystack 匹配 `bin/repomesh:1006`） |
 | `checks` | check_matrix（`:1041`）接受 registry/task 声明的 checks 来源；scenario 用法原样 |
 | `run` | 见下 |
 | `graph`（新增，后置） | 派生 union 视图：聚合各 scenario `depends_on` + registry edges，带出处，只读不裁决 |
@@ -312,7 +312,7 @@ scenario 还是 task 声明 + registry 解析。gates 预检读取的 status.md 
 - **已定（2026-08-23）：A**。evidence 把声明成本转化为 Planning Pass 可核对性，方向性
   正是全局分析最需要的那一维；成文"方向 ≠ 排序义务"。字段级规格：`(from, to)` 为自然键
   （重复边属校验错误，不设 id）；`evidence` 为非空纯字符串，不结构化、不解析语义——兼容
-  PyYAML 缺席时的子集解析器（`bin/scenario-harness:152-162`）。背景判断（用户，2026-08-23）：
+  PyYAML 缺席时的子集解析器（`bin/repomesh:152-162`）。背景判断（用户，2026-08-23）：
   日常任务中仓库边界明显、依赖关系不是瓶颈——图层保持最小机制，价值投资集中在跨仓
   spec 层与 gates。
 
@@ -407,7 +407,7 @@ scenario 还是 task 声明 + registry 解析。gates 预检读取的 status.md 
 
 设计完成（本文件 + `docs/diagrams/freeform-workspace.*` 配图），对应 Goal Contract
 `docs/goal-contracts/2026-08-22-multi-repo-workspace-design-v2.md`。实现未开始：
-`bin/scenario-harness` 修改、AGENTS.md / CLAUDE.md / README 双语修订、repos.yaml 落地
+`bin/repomesh` 修改、AGENTS.md / CLAUDE.md / README 双语修订、repos.yaml 落地
 均属后续执行 Goal。待决问题（2026-08-23）**全部拍板**：Q1=A（有向边 + evidence，
 字段级规格见条目）、Q2=A（统一单文件 repos.yaml）、Q3=B（渐进附加 + warning 交叉
 核对）、Q4=按推荐（必做项 + a 先行；b 协议义务即刻生效、CLI 固化后置）、Q5=A

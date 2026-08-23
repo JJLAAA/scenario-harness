@@ -1,6 +1,6 @@
 # 子进程 Agent 执行层（Subprocess Agent Run）
 
-`bin/scenario-harness run` 的设计文档：每仓子进程 Agent 执行层。它实现 README
+`bin/repomesh run` 的设计文档：每仓子进程 Agent 执行层。它实现 README
 "Single-Session Limits And Per-Repo Sessions" 一节描述的"每仓新会话模式"——每个业务仓库
 在自己的目录内获得一个独立的 Agent 进程，仓库本地运行时机制（指令文件、hooks、skills
 在会话启动时被发现）正常加载；协调侧的 runner 保持确定性。
@@ -92,7 +92,7 @@ exit 0、有效 `ok` verdict、checks 通过三者齐备。
 
 ## 借鉴自 dsh rc.8 的机制
 
-| # | 机制 | dsh 来源 | scenario-harness 适配 |
+| # | 机制 | dsh 来源 | repomesh 适配 |
 | - | --- | --- | --- |
 | 1 | 进程树终止：升级阶梯 + 宽限，整树所有权 | `packages/subprocess`（subprocess seam；`DEFAULT_DISPOSE_GRACE_MS`） | 每次 spawn 独立会话；SIGTERM → `--term-grace`（10s）→ 对进程组 SIGKILL |
 | 2 | 父环境清洗（环境变量不得泄漏给子进程） | `packages/subprocess` `scrubbedParentEnv` | 白名单 overlay：基础变量（`PATH`、`HOME`、locale 等）+ 认证/代理前缀（`ANTHROPIC_*`、`OPENAI_*` 等）；其余全部丢弃 |
@@ -177,7 +177,7 @@ subagent 驱动、app-server wire 适配器。那些服务于完整的 Agent 宿
 
 ## 状态
 
-已在 `bin/scenario-harness run` 实现；由 `tests/run_mock_e2e.py` 自测（mock 后端、
+已在 `bin/repomesh run` 实现；由 `tests/run_mock_e2e.py` 自测（mock 后端、
 临时仓库、零外部副作用；覆盖 verdict ok / missing / blocked / invalid 四类路径与
 重跑前清除旧 verdict 的恢复语义）。真实后端（claude-code、codex）的沙箱验收已完成，
 含 verdict 三路径、权限预设行为与多仓顺序的证据与残余风险，见

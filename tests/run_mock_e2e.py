@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mock end-to-end self-test for `bin/scenario-harness run`.
+"""Mock end-to-end self-test for `bin/repomesh run`.
 
 Creates throwaway harness roots, fake git repos, and mock agent backends in
 temp directories. Never contacts real agent CLIs and never touches real
@@ -22,7 +22,7 @@ import textwrap
 import time
 from pathlib import Path
 
-REAL_HARNESS_BIN = Path(__file__).resolve().parents[1] / "bin" / "scenario-harness"
+REAL_HARNESS_BIN = Path(__file__).resolve().parents[1] / "bin" / "repomesh"
 REAL_TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 
 MOCK_AGENT = textwrap.dedent(
@@ -235,7 +235,7 @@ def make_harness_root(
     (root / "bin").mkdir(parents=True)
     (root / "scenarios" / "mock").mkdir(parents=True)
     (root / "tasks").mkdir(parents=True)
-    shutil.copy2(REAL_HARNESS_BIN, root / "bin" / "scenario-harness")
+    shutil.copy2(REAL_HARNESS_BIN, root / "bin" / "repomesh")
     shutil.copytree(REAL_TEMPLATES_DIR, root / "templates")
     scenario_yaml = SCENARIO_YAML
     if checks_override:
@@ -311,7 +311,7 @@ def run_cli(root: Path, extra_args, env_extra=None):
     env["PATH"] = f"{mockbin}{os.pathsep}{env['PATH']}"
     for key, value in (env_extra or {}).items():
         env[key] = value
-    return sh([str(root / "bin" / "scenario-harness"), *extra_args], env=env)
+    return sh([str(root / "bin" / "repomesh"), *extra_args], env=env)
 
 
 def set_mode(root: Path, repo: str, mode: str | None):
@@ -352,7 +352,7 @@ def test_regression():
     # Temp harness with a fully valid scenario: every command exits 0.
     with tempfile.TemporaryDirectory() as raw:
         root = make_harness_root(Path(raw))
-        cli = str(root / "bin" / "scenario-harness")
+        cli = str(root / "bin" / "repomesh")
         assert sh([cli, "validate-scenario", "mock"]).returncode == 0
         assert sh([cli, "plan-scenario", "mock", "--json"]).returncode == 0
         assert sh([cli, "init-task", "mock", "t2", "--dry-run"]).returncode == 0
@@ -512,7 +512,7 @@ def test_lock():
         env["PATH"] = f"{root.parent / 'mockbin'}{os.pathsep}{env['PATH']}"
         first = subprocess.Popen(
             [
-                str(root / "bin" / "scenario-harness"),
+                str(root / "bin" / "repomesh"),
                 "run",
                 "mock",
                 "--task",
@@ -654,7 +654,7 @@ def test_verdict_stale_reset():
 def test_validate_registry():
     with tempfile.TemporaryDirectory() as raw:
         root = make_harness_root(Path(raw), registry=True)
-        cli = str(root / "bin" / "scenario-harness")
+        cli = str(root / "bin" / "repomesh")
         ok = sh([cli, "validate-registry", "--json"])
         assert ok.returncode == 0, ok.stdout + ok.stderr
         report = json.loads(ok.stdout)
@@ -676,7 +676,7 @@ def test_validate_registry():
 
     with tempfile.TemporaryDirectory() as raw:
         root = make_harness_root(Path(raw), registry=True)
-        cli = str(root / "bin" / "scenario-harness")
+        cli = str(root / "bin" / "repomesh")
         registry_file = root / "repos.yaml"
         base = registry_file.read_text(encoding="utf-8")
 
@@ -706,7 +706,7 @@ def test_validate_registry():
         (root / "repos.yaml").write_text(
             "repos:\n  alpha:\n    path: repos/alpha\n", encoding="utf-8"
         )
-        cli = str(root / "bin" / "scenario-harness")
+        cli = str(root / "bin" / "repomesh")
         reg = sh([cli, "validate-registry", "--json"])
         assert reg.returncode == 0
         reg_report = json.loads(reg.stdout)
@@ -733,7 +733,7 @@ def test_validate_registry():
             ),
             encoding="utf-8",
         )
-        cli = str(root / "bin" / "scenario-harness")
+        cli = str(root / "bin" / "repomesh")
         reg = sh([cli, "validate-registry", "--json"])
         assert reg.returncode == 0
         assert "registry_field_divergence" in {
@@ -750,7 +750,7 @@ def test_validate_registry():
 def test_free_init():
     with tempfile.TemporaryDirectory() as raw:
         root = make_harness_root(Path(raw), registry=True)
-        cli = str(root / "bin" / "scenario-harness")
+        cli = str(root / "bin" / "repomesh")
         dry = sh([cli, "init-task", "--free", "2026-08-23-demo", "--request", "free mock", "--dry-run"])
         assert dry.returncode == 0, dry.stderr
         made = sh([cli, "init-task", "--free", "2026-08-23-demo", "--request", "free mock"])
@@ -849,7 +849,7 @@ def add_repo_row(status_text: str, row: str) -> str:
 
 
 def complete_scenario_task(root: Path, name="ct-scenario"):
-    cli = str(root / "bin" / "scenario-harness")
+    cli = str(root / "bin" / "repomesh")
     assert sh([cli, "init-task", "mock", name, "--request", "check-task fixture"]).returncode == 0
     task_dir = root / "tasks" / name
     status = (task_dir / "status.md").read_text(encoding="utf-8")
@@ -863,7 +863,7 @@ def complete_scenario_task(root: Path, name="ct-scenario"):
 
 
 def complete_free_task(root: Path, name="ct-free"):
-    cli = str(root / "bin" / "scenario-harness")
+    cli = str(root / "bin" / "repomesh")
     assert sh([cli, "init-task", "--free", name, "--request", "check-task fixture"]).returncode == 0
     task_dir = root / "tasks" / name
     status = (task_dir / "status.md").read_text(encoding="utf-8")
@@ -890,7 +890,7 @@ def complete_free_task(root: Path, name="ct-free"):
 def test_check_task_happy():
     with tempfile.TemporaryDirectory() as raw:
         root = make_harness_root(Path(raw), registry=True)
-        cli = str(root / "bin" / "scenario-harness")
+        cli = str(root / "bin" / "repomesh")
         scenario_task = complete_scenario_task(root)
         free_task = complete_free_task(root)
         for task_dir, expected_mode in (
@@ -910,7 +910,7 @@ def test_check_task_happy():
 def test_check_task_broken():
     with tempfile.TemporaryDirectory() as raw:
         root = make_harness_root(Path(raw), registry=True)
-        cli = str(root / "bin" / "scenario-harness")
+        cli = str(root / "bin" / "repomesh")
 
         def lint(task_dir):
             result = sh([cli, "check-task", task_dir.name, "--json"])
@@ -1023,7 +1023,7 @@ def test_check_task_broken():
 def test_check_task_legacy_warnings():
     with tempfile.TemporaryDirectory() as raw:
         root = make_harness_root(Path(raw))
-        cli = str(root / "bin" / "scenario-harness")
+        cli = str(root / "bin" / "repomesh")
         task = complete_scenario_task(root, "ct-legacy")
         status = (task / "status.md").read_text(encoding="utf-8")
         status = status.replace("Mode: `scenario:mock`\n\n", "")
@@ -1046,7 +1046,7 @@ def test_check_task_legacy_warnings():
 def test_check_task_self_consistency():
     with tempfile.TemporaryDirectory() as raw:
         root = make_harness_root(Path(raw), registry=True)
-        cli = str(root / "bin" / "scenario-harness")
+        cli = str(root / "bin" / "repomesh")
         assert sh([cli, "init-task", "mock", "ct-fresh", "--request", "fresh"]).returncode == 0
         assert sh([cli, "init-task", "--free", "ct-fresh-free", "--request", "fresh"]).returncode == 0
         expected_warning_codes = {
@@ -1072,7 +1072,7 @@ def test_check_task_self_consistency():
 def test_check_task_template_probe():
     with tempfile.TemporaryDirectory() as raw:
         root = make_harness_root(Path(raw))
-        cli = str(root / "bin" / "scenario-harness")
+        cli = str(root / "bin" / "repomesh")
         task = complete_scenario_task(root, "ct-probe")
         assert sh([cli, "check-task", "ct-probe"]).returncode == 0
         template = root / "templates" / "spec.md"

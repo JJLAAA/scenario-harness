@@ -35,7 +35,7 @@ Planning Pass 全局分析现场生成拓扑
     <mxCell id="e7" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;strokeColor=#9673a6;exitX=0.25;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="task-files" target="gate-plan"><mxGeometry relative="1" as="geometry" /></mxCell>
     <mxCell id="e8" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;strokeColor=#9673a6;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="gate-plan" target="gate-review"><mxGeometry relative="1" as="geometry" /></mxCell>
     <mxCell id="e9" style="endArrow=classic;edgeStyle=orthogonalEdgeStyle;strokeColor=#b85450;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="gate-review" target="run-box"><mxGeometry relative="1" as="geometry" /></mxCell>
-    <mxCell id="run-box" value="bin/scenario-harness run — 每仓子进程执行层（不变）
+    <mxCell id="run-box" value="bin/repomesh run — 每仓子进程执行层（不变）
 对拓扑中的每个仓库：prompt → 子 Agent（cwd=仓库）→ verdict(ok/blocked) → runner 亲自 checks
 分支门禁 · fail-closed · 首失败即停" style="rounded=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" vertex="1" parent="1"><mxGeometry x="90" y="478" width="620" height="82" as="geometry" /></mxCell>
     <mxCell id="note1" value="全局视角 = 规划/编排阶段；实现阶段每仓子进程隔离 + fail-closed 门禁。

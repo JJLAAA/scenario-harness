@@ -1,12 +1,12 @@
-# Scenario Harness
+# RepoMesh
 
-Scenario Harness is a lightweight control layer for delivering business scenarios that span multiple independent repositories.
+RepoMesh is an agent-first control layer for planning, reviewing, executing, and validating changes across independent repositories.
 
-More precisely, it is an agent-first memory and execution protocol for recurring cross-repo development scenarios outside monorepos. Its niche is not generic multi-repo management. It is for preserving the development knowledge behind a specific repeated scenario: which repositories participate, how they depend on each other, what order changes should follow, what local instructions must be read, and how completion is validated.
+It supports two first-class task entries outside monorepos: reusable scenarios with pre-declared topology, and free tasks whose topology is derived during planning from the workspace registry and repository reality. Both modes share the same task records, gates, per-repository execution, verdicts, and checks. Its niche is not generic multi-repo management; it is explicit, recoverable cross-repo delivery.
 
 It does not replace Git, CI, PR review, or repo-local instructions. Its job is to make cross-repo delivery explicit and repeatable:
 
-- which scenario is being executed
+- which task mode is being executed
 - which repositories are affected
 - what role each repository plays
 - what order the repositories should be changed in
@@ -22,7 +22,7 @@ Many enterprise systems do not fit that shape. A real delivery scenario may span
 
 The business change still has one logical shape even when the code lives in separate repos. The agent needs to know which repositories participate, which one must change first, which local instructions apply inside each repo, what checks to run, what decisions were made, and how to record progress across the whole scenario.
 
-Scenario Harness provides that missing scenario layer. It keeps the repositories independent while giving coding agents a minimal, explicit protocol for coordinated cross-repo development.
+RepoMesh provides that missing workspace-level delivery layer. It keeps the repositories independent while giving coding agents a minimal, explicit protocol for both recurring scenarios and one-off cross-repo tasks.
 
 ## Knowledge Model
 
@@ -44,9 +44,9 @@ The knowledge placement is coupled with an execution protocol: planning and spec
 The Knowledge Model above covers where static knowledge lives; this section covers the runtime structure. Four concerns are separated into distinct artifacts, each with one owner and one lifecycle:
 
 ```text
-scenario-harness/
+repomesh/
 ├── AGENTS.md / CLAUDE.md   # Protocol layer: gates, status vocabulary, spec ownership layering, YAML semantics
-├── bin/scenario-harness    # Mechanism layer: single-file Python CLI — mechanical validation only, never edits business repos
+├── bin/repomesh    # Mechanism layer: single-file Python CLI — mechanical validation only, never edits business repos
 ├── scenarios/<name>/       # Accelerator: pre-declared topology (scenario.yaml + README SOP), one per recurring task class
 ├── repos.yaml              # Accelerator: workspace registry + baseline dependency graph — seeds candidate scoping, never orders or gates
 ├── templates/              # Declarative schema for the four task files; check-task derives its required-section baseline from these skeletons
@@ -119,11 +119,11 @@ The default execution model — one agent session running the scenario serially 
 1. **Cross-repo context contamination is mitigated, not eliminated.** The protocol firewalls (branch check before reading repo context, re-reading instruction sources on every repo entry, never applying one repo's instructions to another) are behavioral discipline, not runtime isolation. Conversation history still carries traces of earlier repos, and compaction summaries blur repo boundaries further. The per-repo summaries required by the execution model bound what carries forward, but a single session cannot guarantee isolation.
 2. **Repo-local runtime mechanisms do not activate.** As noted in "Relationship To Repo-Local Spec Frameworks", hooks, skills, slash commands, and MCP injection bind to project configuration discovered at session start. An agent started in the harness directory that later enters a business repo does not re-trigger that discovery, so single-repo runtime support is absent and compliance runs at the document level.
 
-The structural fix for both limits is the same: run each repository in a fresh agent session started inside that repository, where its runtime mechanisms activate normally. (Verified activation details for headless CLIs — including which mechanisms do not activate, such as Claude Code subagent-frontmatter hooks and approval-gated MCP tools — are recorded in `docs/subprocess-agent-run.md`.) Task files make this possible without orchestration, because they are session-external memory. A per-repo session reads `spec.md`, `status.md`, `decisions.md`, and `validation.md` first, does the repo-local work, and writes results back. The protocol is compatible with this pattern; it simply does not schedule it, and multi-agent orchestration is deferred beyond the MVP. When repos run under `bin/scenario-harness run`, each per-repo session must also end by writing a structured verdict file (`tasks/<task>/verdicts/<repo>.md`); a missing, malformed, or self-reported-blocked verdict blocks the run.
+The structural fix for both limits is the same: run each repository in a fresh agent session started inside that repository, where its runtime mechanisms activate normally. (Verified activation details for headless CLIs — including which mechanisms do not activate, such as Claude Code subagent-frontmatter hooks and approval-gated MCP tools — are recorded in `docs/subprocess-agent-run.md`.) Task files make this possible without orchestration, because they are session-external memory. A per-repo session reads `spec.md`, `status.md`, `decisions.md`, and `validation.md` first, does the repo-local work, and writes results back. The protocol is compatible with this pattern; it simply does not schedule it, and multi-agent orchestration is deferred beyond the MVP. When repos run under `bin/repomesh run`, each per-repo session must also end by writing a structured verdict file (`tasks/<task>/verdicts/<repo>.md`); a missing, malformed, or self-reported-blocked verdict blocks the run.
 
 ## Relationship To Repo-Local Spec Frameworks
 
-Scenario Harness deliberately does not compete with single-repo or monorepo spec frameworks such as Spec Kit, OpenSpec, Trellis, or repo-specific agent workflows. It operates above them.
+RepoMesh deliberately does not compete with single-repo or monorepo spec frameworks such as Spec Kit, OpenSpec, Trellis, or repo-specific agent workflows. It operates above them.
 
 Its current guarantee is explicit discovery and delegation: for each repository, a scenario can declare which repo-local instruction sources, spec directories, and key files an agent must read before making changes.
 
@@ -172,7 +172,7 @@ The README should not duplicate or override structural fields from `scenario.yam
 ## Repository Structure
 
 ```text
-scenario-harness/
+repomesh/
   AGENTS.md
   README.md
   repos.yaml
@@ -196,7 +196,7 @@ Keep this harness separate from all business repos:
 
 ```text
 ~/work/
-  scenario-harness/
+  repomesh/
   api/
   web/
   worker/
@@ -258,13 +258,13 @@ Then create `scenarios/billing-contract-change/README.md` for the scenario purpo
 Before creating task files or entering business repositories, run the agent helper CLI:
 
 ```bash
-bin/scenario-harness validate-scenario billing-contract-change
+bin/repomesh validate-scenario billing-contract-change
 ```
 
 Use JSON when the agent needs a structured contract:
 
 ```bash
-bin/scenario-harness validate-scenario billing-contract-change --json
+bin/repomesh validate-scenario billing-contract-change --json
 ```
 
 The command checks that the scenario files exist, `repos` and `order` agree,
@@ -274,7 +274,7 @@ and exits non-zero when the scenario is not safe to execute.
 For a compact execution summary, use:
 
 ```bash
-bin/scenario-harness plan-scenario billing-contract-change
+bin/repomesh plan-scenario billing-contract-change
 ```
 
 This prints the scenario order, resolved repo paths, instruction sources, key
@@ -286,7 +286,7 @@ structured form.
 A task directory records progress and lets an agent resume safely. If you already have one, pass it to the agent. If not, create one with the helper CLI:
 
 ```bash
-bin/scenario-harness init-task billing-contract-change \
+bin/repomesh init-task billing-contract-change \
   2026-05-20-billing-contract-change \
   --request "Update billing API contract and downstream consumers."
 ```
@@ -311,13 +311,13 @@ If the user asks to continue without naming a task directory, the agent should i
 The helper can list matching task directories:
 
 ```bash
-bin/scenario-harness list-tasks billing-contract-change --incomplete-only
+bin/repomesh list-tasks billing-contract-change --incomplete-only
 ```
 
 Task-file structure can be linted at any time, read-only:
 
 ```bash
-bin/scenario-harness check-task 2026-05-20-billing-contract-change
+bin/repomesh check-task 2026-05-20-billing-contract-change
 ```
 
 `templates/` doubles as the declarative schema for the four task files: the
@@ -334,7 +334,7 @@ warning-only and never changes the exit code; shape violations exit non-zero.
 Before entering repo-local instructions or editing business code, run:
 
 ```bash
-bin/scenario-harness preflight billing-contract-change \
+bin/repomesh preflight billing-contract-change \
   --task 2026-05-20-billing-contract-change
 ```
 
@@ -348,13 +348,13 @@ when the agent needs a read-only structured preview.
 List the repo-local checks declared for the scenario:
 
 ```bash
-bin/scenario-harness checks billing-contract-change
+bin/repomesh checks billing-contract-change
 ```
 
 Run them after repo-local changes:
 
 ```bash
-bin/scenario-harness checks billing-contract-change \
+bin/repomesh checks billing-contract-change \
   --run \
   --task 2026-05-20-billing-contract-change
 ```
@@ -397,7 +397,7 @@ Once the Planning Gate and Spec Review Gate are recorded in `status.md`, the
 helper CLI can drive the implementation pass itself:
 
 ```bash
-bin/scenario-harness run billing-contract-change \
+bin/repomesh run billing-contract-change \
   --task 2026-05-20-billing-contract-change \
   --agent claude-code
 ```
@@ -427,8 +427,8 @@ one-off), the same machinery runs with a task-declared topology instead of a
 pre-declared one:
 
 ```bash
-bin/scenario-harness validate-registry
-bin/scenario-harness init-task --free 2026-05-20-rename-profile-field \
+bin/repomesh validate-registry
+bin/repomesh init-task --free 2026-05-20-rename-profile-field \
   --request "Rename the profile field across api, web, and worker."
 ```
 
@@ -446,9 +446,9 @@ The remaining commands drop the scenario argument and read the task
 declaration plus the registry instead:
 
 ```bash
-bin/scenario-harness preflight --task 2026-05-20-rename-profile-field
-bin/scenario-harness checks --task 2026-05-20-rename-profile-field --run
-bin/scenario-harness run --task 2026-05-20-rename-profile-field --agent claude-code
+bin/repomesh preflight --task 2026-05-20-rename-profile-field
+bin/repomesh checks --task 2026-05-20-rename-profile-field --run
+bin/repomesh run --task 2026-05-20-rename-profile-field --agent claude-code
 ```
 
 `run` refuses a free task without recorded gates exactly as it refuses a
@@ -479,10 +479,10 @@ The agent should:
 1. Select the task mode with the Task Mode Selection Protocol in `AGENTS.md` (scenario task or free task) and record the mode plus reason in the task spec.
 2. Read the required harness docs in order. For a scenario task, read `scenarios/<scenario>/scenario.yaml` to identify affected repository keys; for a free task, read `repos.yaml` and scope candidates before planning.
 3. Read `scenarios/<scenario>/README.md` (scenario task).
-4. Run `bin/scenario-harness validate-scenario <scenario>` (scenario task) or `bin/scenario-harness validate-registry` (free task).
-5. Use `bin/scenario-harness plan-scenario <scenario>` to carry a compact execution summary (scenario accelerator; free tasks plan from the registry).
-6. Create or select task files with `bin/scenario-harness init-task` (or `init-task --free`) or `bin/scenario-harness list-tasks`.
-7. Run preflight before entering business repos: `bin/scenario-harness preflight <scenario> --task <task-id>`, or `preflight --task <task-id>` for a free task.
+4. Run `bin/repomesh validate-scenario <scenario>` (scenario task) or `bin/repomesh validate-registry` (free task).
+5. Use `bin/repomesh plan-scenario <scenario>` to carry a compact execution summary (scenario accelerator; free tasks plan from the registry).
+6. Create or select task files with `bin/repomesh init-task` (or `init-task --free`) or `bin/repomesh list-tasks`.
+7. Run preflight before entering business repos: `bin/repomesh preflight <scenario> --task <task-id>`, or `preflight --task <task-id>` for a free task.
 8. Follow the authoritative order: scenario `order` (scenario task) or the task-declared topology (free task).
 9. For each repo, read the declared `repos.<repo>.instruction_sources` (registry entries fall back to common project files when absent).
 10. Inspect the declared `repos.<repo>.key_files`.
@@ -490,7 +490,7 @@ The agent should:
 12. Implement repo-local changes according to the enriched task spec, following the repo-local spec entries it references (runtime reconciliation first).
 13. Record user clarifications that affect goals, scope, implementation, validation, risks, or delivery order in `spec.md` before continuing.
 14. Record any material deviation from the enriched spec in `decisions.md` and reflect it back into `spec.md` before continuing.
-15. Run each affected repository's repo-local `checks`, preferably through `bin/scenario-harness checks <scenario> --run --task <task-id>` (or `checks --task <task-id> --run` for a free task).
+15. Run each affected repository's repo-local `checks`, preferably through `bin/repomesh checks <scenario> --run --task <task-id>` (or `checks --task <task-id> --run` for a free task).
 16. Update task files under `tasks/<task-id>/`.
 17. Report diff scope, validation results, risks, and delivery order.
 
@@ -537,12 +537,12 @@ For the first real use, run a small task through the helper CLI without committi
 
 1. Replace `example-contract-change` with one real scenario.
 2. Declare the real scenario's repositories directly under `scenarios/<scenario>/scenario.yaml`.
-3. Run `bin/scenario-harness validate-scenario <scenario>`.
-4. Run `bin/scenario-harness plan-scenario <scenario> --json` and confirm the selected repos and order.
-5. Run `bin/scenario-harness init-task <scenario> <task-id> --request "..."`.
-6. Run `bin/scenario-harness preflight <scenario> --task <task-id>`.
+3. Run `bin/repomesh validate-scenario <scenario>`.
+4. Run `bin/repomesh plan-scenario <scenario> --json` and confirm the selected repos and order.
+5. Run `bin/repomesh init-task <scenario> <task-id> --request "..."`.
+6. Run `bin/repomesh preflight <scenario> --task <task-id>`.
 7. Ask the agent to execute the scenario without committing.
-8. Run `bin/scenario-harness checks <scenario> --run --task <task-id>` after repo-local changes.
+8. Run `bin/repomesh checks <scenario> --run --task <task-id>` after repo-local changes.
 9. Confirm `status.md`, `validation.md`, and `decisions.md` contain the recovery information needed for resume.
 
 The helper CLI is responsible for repeated mechanical operations: validation, task initialization,

@@ -1,4 +1,4 @@
-# Scenario Harness Instructions
+# RepoMesh Instructions
 
 This workspace coordinates scenario-oriented delivery across multiple independent repositories.
 
@@ -28,13 +28,13 @@ This project treats agent readability as a primary design requirement.
 
 1. Select the task mode using the Task Mode Selection Protocol (scenario task or free task).
 2. For a scenario task, read `scenarios/<scenario>/scenario.yaml`, then `scenarios/<scenario>/README.md`. For a free task, read `repos.yaml`.
-3. Run validation from the harness root before creating a new task directory: scenario tasks run `bin/scenario-harness validate-scenario <scenario>`; free tasks run `bin/scenario-harness validate-registry`.
+3. Run validation from the harness root before creating a new task directory: scenario tasks run `bin/repomesh validate-scenario <scenario>`; free tasks run `bin/repomesh validate-registry`.
    - If it reports errors, stop before editing business repositories.
    - If resuming an existing task, record `current step: scenario_invalid` (scenario task) or `current step: blocked` with the validation errors (free task) in `tasks/<task>/status.md`.
    - If creating a new task, do not create the task directory until validation passes.
    - Use `--json` when machine-readable output is useful.
 4. Create or locate a task directory under `tasks/`, then set `current step` to `scenario_validated` (scenario task) or `task_created` (free task, before planning).
-5. Inspect git status for all affected repositories. Prefer `bin/scenario-harness preflight <scenario> --task <task-id>` (scenario task) or `bin/scenario-harness preflight --task <task-id>` (free task), then set `current step` to `preflight_complete` if it succeeds.
+5. Inspect git status for all affected repositories. Prefer `bin/repomesh preflight <scenario> --task <task-id>` (scenario task) or `bin/repomesh preflight --task <task-id>` (free task), then set `current step` to `preflight_complete` if it succeeds.
 6. Complete the Planning Pass Protocol for all affected repositories.
 7. Confirm the Planning Gate is recorded as complete in `tasks/<task>/status.md`.
    - Do not edit business repository code before this gate is complete.
@@ -46,18 +46,18 @@ This project treats agent readability as a primary design requirement.
 
 ## Agent Helper CLI
 
-Use `bin/scenario-harness` for mechanical checks before doing manual reasoning.
+Use `bin/repomesh` for mechanical checks before doing manual reasoning.
 
-- `bin/scenario-harness validate-scenario <scenario>` validates the selected scenario, resolved repository paths, checks, and basic field shapes. When `repos.yaml` exists it also emits warning-level consistency findings (Q3-B); warnings never change the exit code.
-- `bin/scenario-harness validate-scenario <scenario> --json` emits stable JSON for agents that want to parse findings.
-- `bin/scenario-harness validate-registry` validates the workspace registry `repos.yaml`: structure, edge endpoints, `(from, to)` uniqueness, non-empty evidence, absence of task-specific values, and path resolution; it also cross-checks scenario repo keys and intrinsic fields against the registry (Q4-a) at warning level.
-- `bin/scenario-harness init-task <scenario> [task-id] --request "..."` creates `spec.md`, `status.md`, `validation.md`, and `decisions.md` from the selected scenario without overwriting existing task files. `bin/scenario-harness init-task --free <task-id> --request "..."` scaffolds the same four files for a free task: it validates the registry instead of a scenario and records `mode: free`; branch rules (default `scenario/<task-id>`, `--branch`, `--repo-branch`) are unchanged.
-- `bin/scenario-harness preflight <scenario> --task <task-id>` inspects affected repository git status, task branch gates, missing instruction sources, and missing key files, then updates `status.md` and `validation.md`. Without a scenario argument, `preflight --task <task-id>` drives the preflight from the task declaration: free tasks resolve their repo set from the status table plus the registry.
-- `bin/scenario-harness plan-scenario <scenario>` prints the compact execution plan: repo order, paths, instruction sources, key files, and checks. Scenario accelerator only; free tasks plan from `repos.yaml` directly.
-- `bin/scenario-harness list-tasks <scenario>` lists matching task directories newest first for resume decisions. The scenario argument is optional: without it, free tasks are listed (mode filter, replacing string haystack matching; `--all` lists every mode).
-- `bin/scenario-harness checks <scenario>` lists repo-local checks; add `--run --task <task-id>` to execute checks and update `validation.md`. Without a scenario argument, `checks --task <task-id>` uses the task-declared repo set with checks from `repos.yaml`.
-- `bin/scenario-harness check-task <task-id>` lints the structure of `tasks/<task-id>` with `templates/` as the declarative schema source: the common-core required-section baseline is extracted from the template skeletons at runtime, so adding or removing a template section changes the schema on the next run with zero code change (mode ownership of sections and error/warning grading stay in the command code; the lint checks section existence, never content). It applies to both modes with the same core: the four task files exist, required sections exist, `current step` is inside the Status Step Vocabulary, the per-repo status table has a legal shape (column count, branch cells, duplicate rows), and the gate sections exist. Three checks are mode-aware: the `Mode:` line value (and scenario existence), table rows resolving against scenario.yaml (scenario tasks) vs `repos.yaml` (free tasks), and mode-specific spec sections (`Scenario Order` vs `Task-Declared Topology` + `Candidate Scoping`). Shape violations are errors (exit 2); stage-level incompleteness — a legacy task without a Mode line, unrecorded gates, an empty repo table, an unset current step, free-task Candidate Scoping still TBD — is warning-only and never changes the exit code. Purely read-only and never writes files; supports `--json`.
-- `bin/scenario-harness run <scenario> --task <task-id>` executes the gated per-repo subprocess agent layer: it refuses to start unless the Planning Gate and Spec Review Gate are recorded in `status.md`, then walks repositories in scenario order, spawns the selected agent backend (`--agent claude-code|codex|gemini`) inside each repository, requires each child agent to end with a structured verdict file (`tasks/<task>/verdicts/<repo>.md`) where a missing, malformed, or self-reported-blocked verdict blocks the run, runs repo checks itself, and records agent telemetry and stage × category failures in task files. The scenario argument is optional: `run --task <task-id>` reads the mode from the task's `status.md`; a free task builds its context from the task declaration plus `repos.yaml` and walks the task-declared order, with gates, verdicts, and checks behaving identically. See `docs/subprocess-agent-run.md`.
+- `bin/repomesh validate-scenario <scenario>` validates the selected scenario, resolved repository paths, checks, and basic field shapes. When `repos.yaml` exists it also emits warning-level consistency findings (Q3-B); warnings never change the exit code.
+- `bin/repomesh validate-scenario <scenario> --json` emits stable JSON for agents that want to parse findings.
+- `bin/repomesh validate-registry` validates the workspace registry `repos.yaml`: structure, edge endpoints, `(from, to)` uniqueness, non-empty evidence, absence of task-specific values, and path resolution; it also cross-checks scenario repo keys and intrinsic fields against the registry (Q4-a) at warning level.
+- `bin/repomesh init-task <scenario> [task-id] --request "..."` creates `spec.md`, `status.md`, `validation.md`, and `decisions.md` from the selected scenario without overwriting existing task files. `bin/repomesh init-task --free <task-id> --request "..."` scaffolds the same four files for a free task: it validates the registry instead of a scenario and records `mode: free`; branch rules (default `scenario/<task-id>`, `--branch`, `--repo-branch`) are unchanged.
+- `bin/repomesh preflight <scenario> --task <task-id>` inspects affected repository git status, task branch gates, missing instruction sources, and missing key files, then updates `status.md` and `validation.md`. Without a scenario argument, `preflight --task <task-id>` drives the preflight from the task declaration: free tasks resolve their repo set from the status table plus the registry.
+- `bin/repomesh plan-scenario <scenario>` prints the compact execution plan: repo order, paths, instruction sources, key files, and checks. Scenario accelerator only; free tasks plan from `repos.yaml` directly.
+- `bin/repomesh list-tasks <scenario>` lists matching task directories newest first for resume decisions. The scenario argument is optional: without it, free tasks are listed (mode filter, replacing string haystack matching; `--all` lists every mode).
+- `bin/repomesh checks <scenario>` lists repo-local checks; add `--run --task <task-id>` to execute checks and update `validation.md`. Without a scenario argument, `checks --task <task-id>` uses the task-declared repo set with checks from `repos.yaml`.
+- `bin/repomesh check-task <task-id>` lints the structure of `tasks/<task-id>` with `templates/` as the declarative schema source: the common-core required-section baseline is extracted from the template skeletons at runtime, so adding or removing a template section changes the schema on the next run with zero code change (mode ownership of sections and error/warning grading stay in the command code; the lint checks section existence, never content). It applies to both modes with the same core: the four task files exist, required sections exist, `current step` is inside the Status Step Vocabulary, the per-repo status table has a legal shape (column count, branch cells, duplicate rows), and the gate sections exist. Three checks are mode-aware: the `Mode:` line value (and scenario existence), table rows resolving against scenario.yaml (scenario tasks) vs `repos.yaml` (free tasks), and mode-specific spec sections (`Scenario Order` vs `Task-Declared Topology` + `Candidate Scoping`). Shape violations are errors (exit 2); stage-level incompleteness — a legacy task without a Mode line, unrecorded gates, an empty repo table, an unset current step, free-task Candidate Scoping still TBD — is warning-only and never changes the exit code. Purely read-only and never writes files; supports `--json`.
+- `bin/repomesh run <scenario> --task <task-id>` executes the gated per-repo subprocess agent layer: it refuses to start unless the Planning Gate and Spec Review Gate are recorded in `status.md`, then walks repositories in scenario order, spawns the selected agent backend (`--agent claude-code|codex|gemini`) inside each repository, requires each child agent to end with a structured verdict file (`tasks/<task>/verdicts/<repo>.md`) where a missing, malformed, or self-reported-blocked verdict blocks the run, runs repo checks itself, and records agent telemetry and stage × category failures in task files. The scenario argument is optional: `run --task <task-id>` reads the mode from the task's `status.md`; a free task builds its context from the task declaration plus `repos.yaml` and walks the task-declared order, with gates, verdicts, and checks behaving identically. See `docs/subprocess-agent-run.md`.
 
 Exit codes:
 
@@ -82,7 +82,7 @@ The helper CLI itself never edits business repositories and never changes git st
 Free tasks handle cross-repo requests whose topology is not pre-declared by any scenario. They share every gate, verdict, check, and completion semantic with scenario tasks; the only differences are where the topology comes from and how the dependency readiness section is initialized.
 
 1. **Mode selection**: Task Mode Selection Protocol; record `mode: free` and the reason in `spec.md`.
-2. **Initialization**: `bin/scenario-harness init-task --free <task-id> --request "..."` scaffolds the same four files and writes `mode: free` into `status.md`. Free tasks are named `YYYY-MM-DD-<short-topic>` (no scenario suffix). Expected-branch rules match scenario tasks: default `scenario/<task-id>`, or `--branch` / `--repo-branch` overrides recorded as defaults the Planning Pass materializes into per-repo rows.
+2. **Initialization**: `bin/repomesh init-task --free <task-id> --request "..."` scaffolds the same four files and writes `mode: free` into `status.md`. Free tasks are named `YYYY-MM-DD-<short-topic>` (no scenario suffix). Expected-branch rules match scenario tasks: default `scenario/<task-id>`, or `--branch` / `--repo-branch` overrides recorded as defaults the Planning Pass materializes into per-repo rows.
 3. **Candidate scoping**: read `repos.yaml`. Start from the user-named repos and collect candidates along baseline-graph in-edges (repos consuming a changed repo's outputs). Out-edge upstreams are included only when the request itself requires upstream changes; never traverse out-edges only. Record each candidate and its provenance (edge evidence or user naming) in `spec.md`. When the graph is empty or `repos.yaml` declares no edges, the candidate set is all registered repos or the user-named set.
 4. **Planning Pass**: verify repo reality for each candidate (actual dependencies, not just graph edges), then determine the affected repo set, order, per-repo expected changes, contracts, downstream impact, and validation strategy; write them into `spec.md` and the `status.md` per-repo table — row order in that table is the task-declared execution order consumed by preflight, checks, and run. Initialize the dependency readiness section from the task-level dependency edges produced by planning. Record exclusion reasons for candidates not selected (auditable, recoverable). Then author per-repo spec entries per the Spec Ownership Layering.
 5. **Single-repo adjudication duty**: a single-repo conclusion is derived, never assumed. Adjudge single-repo only when all three hold: (a) a workspace-level reverse lookup mechanically scanned all registered repos for references to X's outputs (imports, manifest dependencies, API paths, event names) with no hits — graph hits may narrow the scan, but an empty in-edge set alone is never sufficient; (b) every in-edge neighbor of X was verified against repo reality and its exclusion recorded; (c) out-edge upstreams genuinely need no change. Persist evidence and exclusions in `spec.md`.
@@ -324,7 +324,7 @@ The active task directory is the recovery point for a scenario run.
 
 When creating a new task directory:
 
-- Prefer `bin/scenario-harness init-task <scenario> [task-id] --request "..."`.
+- Prefer `bin/repomesh init-task <scenario> [task-id] --request "..."`.
 - If the helper cannot be used, copy the files from `templates/` into the task directory with these names:
   - `spec.md` to `spec.md`
   - `task-status.md` to `status.md`
@@ -351,7 +351,7 @@ When resuming an existing task directory, read these files before editing reposi
 After reading the task files, rerun scenario validation before editing repositories:
 
 1. Read the current `scenarios/<scenario>/scenario.yaml` and `scenarios/<scenario>/README.md`.
-2. Run `bin/scenario-harness validate-scenario <scenario>`.
+2. Run `bin/repomesh validate-scenario <scenario>`.
 3. Compare the current repo order, repo keys, repo paths, instruction sources, key files, and checks against the selected task files.
 4. If scenario structure changed in a way that could invalidate the task spec or validation plan, set `current step` to `replanning_required`, record the mismatch in `status.md`, and run the Replanning Protocol before editing repositories.
 
@@ -419,7 +419,7 @@ Do not duplicate routine progress in `decisions.md`; put progress in `status.md`
 Path resolution:
 
 - Absolute paths are used as-is.
-- Relative paths are resolved relative to the scenario harness root.
+- Relative paths are resolved relative to the RepoMesh root.
 - Paths containing shell-style variables are invalid.
 
 `scenarios/<scenario>/scenario.yaml`:

@@ -1,12 +1,12 @@
-# Scenario Harness 中文使用说明
+# RepoMesh 中文使用说明
 
-Scenario Harness 是一个轻量的跨仓库交付控制层，用来帮助 agent 稳定执行“一个业务场景需要修改多个独立仓库”的任务。
+RepoMesh 是一个 agent-first 跨仓库交付控制层，用于规划、评审、执行和验证分布在多个独立仓库中的变更。
 
-更准确地说，它是面向非 monorepo 环境中、反复出现的特定跨 repo 开发 Scenario 的 agent-first 记忆层和执行协议。它不是泛化的 multi-repo 管理工具，而是用来沉淀某类重复业务变更背后的开发知识：哪些仓库参与、仓库之间如何依赖、修改应按什么顺序推进、进入每个仓库前要读取哪些本地规则，以及如何验证交付完成。
+它为非 monorepo 工作区提供两种一等任务入口：拓扑预声明、可重复使用的 Scenario Task，以及在规划阶段依据 workspace registry 和仓库现实生成拓扑的 Free Task。两种模式共享同一套任务记录、gates、逐仓执行、verdict 和 checks。它不是泛化的 multi-repo 管理工具，核心价值是让跨仓交付显式、可恢复、可验证。
 
 它不替代 Git、CI、PR review，也不替代每个业务仓库自己的开发规范。它的职责是把跨 repo 交付中容易靠记忆和猜测完成的部分显式写下来：
 
-- 当前执行的是哪个业务场景
+- 当前执行的是哪种任务模式
 - 涉及哪些仓库
 - 每个仓库在场景中的角色是什么
 - 仓库应该按什么顺序修改
@@ -22,7 +22,7 @@ Coding agent 越来越依赖 spec、指令和执行协议来可靠地完成代�
 
 代码分散在多个 repo 中，并不代表业务变更本身是分散的。对 agent 来说，它仍然需要理解这次变更的整体形状：哪些 repo 参与、哪个 repo 应该先改、进入每个 repo 后适用哪些本地规则、应该运行哪些检查、做过哪些决策，以及如何记录整个场景的进度。
 
-Scenario Harness 补的就是这一层 scenario-level 协议。它不强行合并 repo，而是在保持各仓库独立的前提下，为 coding agent 提供一个最小但明确的跨 repo 协同开发流程。
+RepoMesh 补的是 workspace-level 交付协议。它不强行合并 repo，而是在保持各仓库独立的前提下，为 coding agent 同时提供可复用 Scenario 与一次性跨仓任务的明确执行流程。
 
 ## 知识模型
 
@@ -44,9 +44,9 @@ harness 把一次跨仓交付所需的知识分成四层，各有明确的归属
 上面的知识模型回答的是静态知识放在哪里;本节回答运行时结构。四类关注点分离到不同的工件,各有唯一归属和生命周期:
 
 ```text
-scenario-harness/
+repomesh/
 ├── AGENTS.md / CLAUDE.md   # 协议层:门禁、状态词汇表、Spec 分层归属、YAML 语义
-├── bin/scenario-harness    # 机制层:单文件 Python CLI——只做机械校验,绝不编辑业务仓库
+├── bin/repomesh    # 机制层:单文件 Python CLI——只做机械校验,绝不编辑业务仓库
 ├── scenarios/<name>/       # 加速器:预声明拓扑(scenario.yaml + README SOP),每类重复任务一份
 ├── repos.yaml              # 加速器:工作区注册表 + 基线依赖图——只为候选圈定提供起点,不排序、不 gate
 ├── templates/              # 四个任务文件的声明式 schema;check-task 的必备章节基准运行时从骨架提取
@@ -119,11 +119,11 @@ fail-closed 行为与模式无关:
 1. **跨仓上下文污染只能缓解，不能消除。** 协议防火墙（读仓库上下文前先做分支检查、每次进仓重读 instruction sources、不把一个仓库的指令套用到另一个仓库）是行为纪律，不是运行时隔离。会话历史仍会携带前面仓库的痕迹，压缩摘要会进一步模糊仓库边界。执行模型要求的每仓总结约束了向后传递的内容，但单一会话无法保证隔离。
 2. **仓库本地运行时机制不会激活。** 如"与 Repo-Local Spec 框架的关系"一节所述，hooks、skills、slash commands 和 MCP 注入绑定在会话启动时发现的项目配置上。从 harness 目录启动、随后进入业务仓库的 Agent 不会重新触发发现流程，因此单仓设计的运行时支持是缺席的，合规只发生在文档层。
 
-两个局限的结构性解法相同：让每个仓库在它自己的目录里新起一个 Agent 会话来执行，此时该仓的运行时机制正常激活。（headless CLI 下各机制的激活核查——包括哪些机制不会激活，如 Claude Code 的 subagent frontmatter hooks 与需审批的 MCP 工具——已记录于 `docs/subprocess-agent-run.md`。）task files 让这件事不需要编排就能做到，因为它们是会话外记忆。每仓会话先读 `spec.md`、`status.md`、`decisions.md`、`validation.md`，完成仓库内工作，再把结果写回。协议完全兼容这种模式，只是不为它做调度；多 Agent 编排推迟到 MVP 之后。当仓库通过 `bin/scenario-harness run` 执行时，每个每仓会话还必须在收尾时写出结构化 verdict 文件（`tasks/<task>/verdicts/<repo>.md`）；verdict 缺失、格式非法或自报 blocked 都会阻断 run。
+两个局限的结构性解法相同：让每个仓库在它自己的目录里新起一个 Agent 会话来执行，此时该仓的运行时机制正常激活。（headless CLI 下各机制的激活核查——包括哪些机制不会激活，如 Claude Code 的 subagent frontmatter hooks 与需审批的 MCP 工具——已记录于 `docs/subprocess-agent-run.md`。）task files 让这件事不需要编排就能做到，因为它们是会话外记忆。每仓会话先读 `spec.md`、`status.md`、`decisions.md`、`validation.md`，完成仓库内工作，再把结果写回。协议完全兼容这种模式，只是不为它做调度；多 Agent 编排推迟到 MVP 之后。当仓库通过 `bin/repomesh run` 执行时，每个每仓会话还必须在收尾时写出结构化 verdict 文件（`tasks/<task>/verdicts/<repo>.md`）；verdict 缺失、格式非法或自报 blocked 都会阻断 run。
 
 ## 与 Repo-Local Spec 框架的关系
 
-Scenario Harness 不与 Spec Kit、OpenSpec、Trellis 或 repo 自定义 agent workflow 这类单 repo / monorepo spec 框架竞争。它位于这些框架之上。
+RepoMesh 不与 Spec Kit、OpenSpec、Trellis 或 repo 自定义 agent workflow 这类单 repo / monorepo spec 框架竞争。它位于这些框架之上。
 
 它当前能够保证的是显式发现和委托：每个 scenario 可以声明 Agent 进入某个 repo 后必须读取哪些 repo-local 指令入口、spec 目录和关键文件，然后再进行修改。
 
@@ -178,7 +178,7 @@ README 不应该重复或覆盖 `scenario.yaml` 中的结构化执行字段。�
 ## 目录结构
 
 ```text
-scenario-harness/
+repomesh/
   AGENTS.md
   README.md
   README.zh.md
@@ -203,7 +203,7 @@ scenario-harness/
 
 ```text
 ~/work/
-  scenario-harness/
+  repomesh/
   api/
   web/
   worker/
@@ -267,13 +267,13 @@ scenarios/billing-contract-change/scenario.yaml
 创建 task 文件或进入业务仓库之前，先运行 agent helper CLI：
 
 ```bash
-bin/scenario-harness validate-scenario billing-contract-change
+bin/repomesh validate-scenario billing-contract-change
 ```
 
 如果 Agent 需要结构化输出，使用 JSON：
 
 ```bash
-bin/scenario-harness validate-scenario billing-contract-change --json
+bin/repomesh validate-scenario billing-contract-change --json
 ```
 
 这个命令会只读检查 scenario 文件是否存在、`repos` 和 `order` 是否一致、checks 形状是否合法、仓库路径是否可解析。它不会修改业务仓库；
@@ -282,7 +282,7 @@ bin/scenario-harness validate-scenario billing-contract-change --json
 需要压缩执行上下文时，使用：
 
 ```bash
-bin/scenario-harness plan-scenario billing-contract-change
+bin/repomesh plan-scenario billing-contract-change
 ```
 
 它会打印 scenario 顺序、解析后的 repo 路径、instruction sources、key files 和 repo-local checks。
@@ -293,7 +293,7 @@ bin/scenario-harness plan-scenario billing-contract-change
 任务目录用于记录进度，并让 agent 可以安全恢复。如果已有任务目录，直接提供给 agent。否则用 helper CLI 创建：
 
 ```bash
-bin/scenario-harness init-task billing-contract-change \
+bin/repomesh init-task billing-contract-change \
   2026-05-20-billing-contract-change \
   --request "Update billing API contract and downstream consumers."
 ```
@@ -318,13 +318,13 @@ bin/scenario-harness init-task billing-contract-change \
 helper 可以列出匹配的 task 目录：
 
 ```bash
-bin/scenario-harness list-tasks billing-contract-change --incomplete-only
+bin/repomesh list-tasks billing-contract-change --incomplete-only
 ```
 
 任务文件的结构随时可以做只读 lint：
 
 ```bash
-bin/scenario-harness check-task 2026-05-20-billing-contract-change
+bin/repomesh check-task 2026-05-20-billing-contract-change
 ```
 
 `templates/` 同时充当四个任务文件的声明式 schema：必备章节基准在运行时从模板骨架提取，
@@ -338,7 +338,7 @@ gates 未记录、repo 表无行、旧式任务无 Mode 行——只产生 warni
 进入 repo-local instructions 或编辑业务代码之前，运行：
 
 ```bash
-bin/scenario-harness preflight billing-contract-change \
+bin/repomesh preflight billing-contract-change \
   --task 2026-05-20-billing-contract-change
 ```
 
@@ -351,13 +351,13 @@ Preflight 会检查每个 affected repo 的当前分支、dirty state、缺失 i
 列出 scenario 声明的 repo-local checks：
 
 ```bash
-bin/scenario-harness checks billing-contract-change
+bin/repomesh checks billing-contract-change
 ```
 
 完成 repo-local 修改后运行：
 
 ```bash
-bin/scenario-harness checks billing-contract-change \
+bin/repomesh checks billing-contract-change \
   --run \
   --task 2026-05-20-billing-contract-change
 ```
@@ -399,7 +399,7 @@ bin/scenario-harness checks billing-contract-change \
 可以自己驱动实现阶段：
 
 ```bash
-bin/scenario-harness run billing-contract-change \
+bin/repomesh run billing-contract-change \
   --task 2026-05-20-billing-contract-change \
   --agent claude-code
 ```
@@ -423,8 +423,8 @@ mock 自测脚本为 `tests/run_mock_e2e.py`。
 当请求匹配不到任何已声明的 scenario（或明确是一次性需求）时，同一套机制以任务声明的拓扑运行，而不是预声明拓扑：
 
 ```bash
-bin/scenario-harness validate-registry
-bin/scenario-harness init-task --free 2026-05-20-rename-profile-field \
+bin/repomesh validate-registry
+bin/repomesh init-task --free 2026-05-20-rename-profile-field \
   --request "Rename the profile field across api, web, and worker."
 ```
 
@@ -438,9 +438,9 @@ bin/scenario-harness init-task --free 2026-05-20-rename-profile-field \
 后续命令省略 scenario 参数，改读任务声明 + registry：
 
 ```bash
-bin/scenario-harness preflight --task 2026-05-20-rename-profile-field
-bin/scenario-harness checks --task 2026-05-20-rename-profile-field --run
-bin/scenario-harness run --task 2026-05-20-rename-profile-field --agent claude-code
+bin/repomesh preflight --task 2026-05-20-rename-profile-field
+bin/repomesh checks --task 2026-05-20-rename-profile-field --run
+bin/repomesh run --task 2026-05-20-rename-profile-field --agent claude-code
 ```
 
 `run` 对无 gates 记录的自由任务与 scenario 任务一视同仁地拒绝（exit 2，
@@ -470,10 +470,10 @@ agent 应该：
 1. 用 `AGENTS.md` 的 Task Mode Selection Protocol 选择任务模式（scenario 任务或自由任务），并把模式与理由记入任务 spec
 2. 按顺序阅读 harness 文档。scenario 任务读 `scenarios/<scenario>/scenario.yaml` 确定 affected repo key；自由任务读 `repos.yaml` 并在规划前圈定候选
 3. 阅读 `scenarios/<scenario>/README.md`（scenario 任务）
-4. 运行 `bin/scenario-harness validate-scenario <scenario>`（scenario 任务）或 `bin/scenario-harness validate-registry`（自由任务）
-5. 用 `bin/scenario-harness plan-scenario <scenario>` 携带压缩后的执行摘要（scenario 加速器；自由任务直接从 registry 规划）
-6. 用 `bin/scenario-harness init-task`（或 `init-task --free`）或 `bin/scenario-harness list-tasks` 创建或选择 task 文件
-7. 进入业务 repo 前运行 preflight：`bin/scenario-harness preflight <scenario> --task <task-id>`，自由任务用 `preflight --task <task-id>`
+4. 运行 `bin/repomesh validate-scenario <scenario>`（scenario 任务）或 `bin/repomesh validate-registry`（自由任务）
+5. 用 `bin/repomesh plan-scenario <scenario>` 携带压缩后的执行摘要（scenario 加速器；自由任务直接从 registry 规划）
+6. 用 `bin/repomesh init-task`（或 `init-task --free`）或 `bin/repomesh list-tasks` 创建或选择 task 文件
+7. 进入业务 repo 前运行 preflight：`bin/repomesh preflight <scenario> --task <task-id>`，自由任务用 `preflight --task <task-id>`
 8. 按权威顺序执行：scenario `order`（scenario 任务）或任务声明拓扑（自由任务）
 9. 进入每个 repo 后读取声明的 `repos.<repo>.instruction_sources`（registry 条目缺省时回落到通用项目文件）
 10. 检查声明的 `repos.<repo>.key_files`
@@ -481,7 +481,7 @@ agent 应该：
 12. 按补全后的 task spec 实施 repo-local 修改，遵循 spec 引用的仓内 spec 条目（先做运行时对账）
 13. 如果用户澄清会影响目标、范围、实现、验证、风险或交付顺序，继续前先同步到 `spec.md`
 14. 如果实现需要明显偏离补全后的 spec，先在 `decisions.md` 记录原因，并把变化同步回 `spec.md`
-15. 运行每个 affected repo 的 repo-local `checks`，优先使用 `bin/scenario-harness checks <scenario> --run --task <task-id>`（自由任务用 `checks --task <task-id> --run`）
+15. 运行每个 affected repo 的 repo-local `checks`，优先使用 `bin/repomesh checks <scenario> --run --task <task-id>`（自由任务用 `checks --task <task-id> --run`）
 16. 更新 `tasks/<task-id>/` 下的任务文件
 17. 汇报 diff 范围、验证结果、风险和交付顺序
 
@@ -528,12 +528,12 @@ agent 不应该：
 
 1. 用一个真实场景替换 `example-contract-change`
 2. 在 `scenarios/<scenario>/scenario.yaml` 中直接声明该场景的真实 repo
-3. 运行 `bin/scenario-harness validate-scenario <scenario>`
-4. 运行 `bin/scenario-harness plan-scenario <scenario> --json`，确认 selected repos 和 order
-5. 运行 `bin/scenario-harness init-task <scenario> <task-id> --request "..."`
-6. 运行 `bin/scenario-harness preflight <scenario> --task <task-id>`
+3. 运行 `bin/repomesh validate-scenario <scenario>`
+4. 运行 `bin/repomesh plan-scenario <scenario> --json`，确认 selected repos 和 order
+5. 运行 `bin/repomesh init-task <scenario> <task-id> --request "..."`
+6. 运行 `bin/repomesh preflight <scenario> --task <task-id>`
 7. 要求 agent 执行场景，但不要 commit
-8. repo-local 修改后运行 `bin/scenario-harness checks <scenario> --run --task <task-id>`
+8. repo-local 修改后运行 `bin/repomesh checks <scenario> --run --task <task-id>`
 9. 确认 `status.md`、`validation.md` 和 `decisions.md` 包含恢复任务所需的信息
 
 helper CLI 负责重复机械步骤：校验、初始化 task、捕获 preflight 状态、发现 task、压缩计划和执行 checks。

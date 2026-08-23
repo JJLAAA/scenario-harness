@@ -1,5 +1,7 @@
 # 真实后端验收报告（Real Backend Acceptance）
 
+> 历史迁移说明：本报告保留项目更名为 RepoMesh 前的名称与命令，以维持当时验收证据的可追溯性；当前 CLI 为 `bin/repomesh`。
+
 日期：2026-08-22 ｜ 契约：`docs/goal-contracts/2026-08-22-real-backend-acceptance.md`
 被验收对象：`bin/scenario-harness run`（verdict 门禁版，mock e2e 15/15）
 后端：claude 2.1.238（GLM 代理后端）、codex-cli 0.149.0 ｜ gemini 未安装，未测

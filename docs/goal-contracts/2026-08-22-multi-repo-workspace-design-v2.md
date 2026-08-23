@@ -1,5 +1,7 @@
 # Goal Contract v2
 
+> 历史迁移说明：本文件保留项目更名为 RepoMesh 前的名称与命令，以维持当时决策的可追溯性；当前 CLI 为 `bin/repomesh`。
+
 状态：GOAL CONTRACT 已确认（2026-08-22）
 
 ## Goal

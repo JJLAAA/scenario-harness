@@ -36,7 +36,7 @@ Progress-only clarifications belong in status.md instead.
 ## Scenario Order
 
 <!-- Prefer generating this file with:
-bin/scenario-harness init-task <scenario> [task-id] --request "..."
+bin/repomesh init-task <scenario> [task-id] --request "..."
 If editing manually, replace this list with scenario.yaml order.
 -->
 
